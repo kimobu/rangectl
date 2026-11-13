@@ -1,0 +1,31 @@
+---
+- import_playbook: data.yml
+  vars:
+    data_path: "{{ rangectl_ad_data_path | default(rangectl_range_base ~ '/ad/' ~ domain_name ~ '/data') }}"
+  tags: "data"
+
+- name: "Upload elastic agent"
+  hosts: dc
+  roles:
+    - { role: "seconion/upload", tags: "upload" }
+
+- name: "Stage Windows elastic agent on file share"
+  hosts: files
+  roles:
+    - { role: "seconion/upload", tags: "upload" }
+
+- name: Install elastic-agent
+  hosts: domain
+  roles:
+    - { role: "seconion/install", tags: "install" }
+
+- name: Install elastic-agent on Linux
+  hosts: defender_linux
+  roles:
+    - { role: "seconion/install_linux", tags: "install_linux" }
+
+- name: Install Falco on monitored Kubernetes hosts
+  hosts: kubernetes_monitoring
+  become: true
+  roles:
+    - { role: "falco", tags: "falco" }

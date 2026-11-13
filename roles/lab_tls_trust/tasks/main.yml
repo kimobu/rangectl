@@ -1,0 +1,96 @@
+---
+- name: Ensure lab certificate directory exists
+  ansible.builtin.file:
+    path: "{{ lab_tls_trust_cert_dir }}"
+    state: directory
+    owner: root
+    group: wheel
+    mode: "0755"
+  become: true
+
+- name: Remove stale lab certificate markers
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ lab_tls_trust_stale_cert_paths }}"
+  become: true
+
+- name: Copy lab root CA
+  ansible.builtin.copy:
+    src: "{{ lab_tls_trust_ca_local_path }}"
+    dest: "{{ lab_tls_trust_cert_dir }}/{{ lab_tls_trust_ca_dest_filename }}"
+    owner: root
+    group: wheel
+    mode: "0644"
+  register: lab_tls_trust_ca_copy
+  become: true
+
+- name: Check lab root CA trust
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/security
+      - find-certificate
+      - -c
+      - "{{ lab_tls_trust_ca_common_name }}"
+      - /Library/Keychains/System.keychain
+  register: lab_tls_trust_ca_trust
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Remove stale lab root CA trust entry
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/security
+      - delete-certificate
+      - -c
+      - "{{ lab_tls_trust_ca_common_name }}"
+      - /Library/Keychains/System.keychain
+  when:
+    - lab_tls_trust_ca_copy.changed
+    - lab_tls_trust_ca_trust.rc == 0
+  become: true
+
+- name: Trust lab root CA
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/security
+      - add-trusted-cert
+      - -d
+      - -r
+      - trustRoot
+      - -k
+      - /Library/Keychains/System.keychain
+      - "{{ lab_tls_trust_cert_dir }}/{{ lab_tls_trust_ca_dest_filename }}"
+  when: lab_tls_trust_ca_copy.changed or lab_tls_trust_ca_trust.rc != 0
+  become: true
+
+- name: Trust lab root CA for Python framework OpenSSL bundles
+  ansible.builtin.shell: |
+    set -e
+    ca="{{ lab_tls_trust_cert_dir }}/{{ lab_tls_trust_ca_dest_filename }}"
+    for openssl_dir in /Library/Frameworks/Python.framework/Versions/*/etc/openssl; do
+      [ -d "$openssl_dir" ] || continue
+      mkdir -p "$openssl_dir"
+      bundle="$openssl_dir/cert.pem"
+      touch "$bundle"
+      if ! grep -q "{{ lab_tls_trust_ca_common_name }}" "$bundle"; then
+        {
+          printf '\n# {{ lab_tls_trust_ca_common_name }}\n'
+          cat "$ca"
+        } >> "$bundle"
+      fi
+    done
+    for bundle in /usr/local/etc/openssl*/cert.pem; do
+      [ -f "$bundle" ] || continue
+      if ! grep -q "{{ lab_tls_trust_ca_common_name }}" "$bundle"; then
+        {
+          printf '\n# {{ lab_tls_trust_ca_common_name }}\n'
+          cat "$ca"
+        } >> "$bundle"
+      fi
+    done
+  args:
+    executable: /bin/sh
+  changed_when: false
+  become: true

@@ -1,0 +1,12 @@
+---
+# Load datas
+- import_playbook: data.yml
+  vars:
+    data_path: "{{ rangectl_ad_data_path | default(rangectl_range_base ~ '/ad/' ~ domain_name ~ '/data') }}"
+  tags: 'data'
+    
+- name: Install sysmon
+  hosts: domain
+  roles:
+    - { role: 'sysmon/install', tags: 'install'}
+    

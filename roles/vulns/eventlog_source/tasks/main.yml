@@ -1,0 +1,12 @@
+- name: Ensure event log source exists
+  ansible.windows.win_shell: |
+    $log = "{{ item.value.log_name }}"
+    $source = "{{ item.value.source }}"
+    if (-not [System.Diagnostics.EventLog]::SourceExists($source)) {
+        New-EventLog -LogName $log -Source $source
+        Write-Output "created"
+    }
+  changed_when: "'created' in (stdout | default(''))"
+  loop: "{{ vulns_vars | dict2items }}"
+  loop_control:
+    label: "{{ item.value.source }}"

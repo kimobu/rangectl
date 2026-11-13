@@ -1,0 +1,8 @@
+---
+activity_agent_launcher_filename: activity-agent.sh
+activity_agent_launchd_label: dev.rangectl.activity
+activity_agent_launchd_plist_path: /Library/LaunchAgents/dev.rangectl.activity.plist
+activity_agent_stdout_path: /tmp/rangectl-activity.out.log
+activity_agent_stderr_path: /tmp/rangectl-activity.err.log
+activity_agent_legacy_install_dirs: []
+activity_agent_legacy_launchd_plists: []

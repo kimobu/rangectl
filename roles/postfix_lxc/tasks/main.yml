@@ -1,0 +1,242 @@
+- name: Install mail stack packages
+  apt:
+    name: "{{ postfix_packages }}"
+    state: present
+    update_cache: true
+
+- name: Ensure MariaDB is running
+  systemd:
+    name: mariadb
+    state: started
+    enabled: true
+
+- name: Detect PEP 668 externally-managed Python
+  ansible.builtin.stat:
+    path: "/usr/lib/python{{ ansible_facts.python.version.major }}.{{ ansible_facts.python.version.minor }}/EXTERNALLY-MANAGED"
+  register: postfix_externally_managed_python
+
+- name: Install python libraries for scheduled mail
+  ansible.builtin.pip:
+    name:
+      - requests
+    executable: pip3
+    extra_args: "{{ '--break-system-packages' if postfix_externally_managed_python.stat.exists else omit }}"
+
+- name: Ensure vmail group exists
+  ansible.builtin.group:
+    name: vmail
+    gid: 1001
+    state: present
+
+- name: Ensure vmail user/group exists
+  ansible.builtin.user:
+    name: vmail
+    uid: 1001
+    group: vmail
+    create_home: false
+    state: present
+
+- name: Ensure mail directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: vmail
+    group: vmail
+    mode: "0755"
+  loop: "{{ postfix_maildirs }}"
+
+- name: Ensure maildir subdirectories exist
+  file:
+    path: "{{ item.0 }}/{{ item.1 }}"
+    state: directory
+    owner: vmail
+    group: vmail
+    mode: "0755"
+  loop: "{{ postfix_maildirs | product(['cur', 'new', 'tmp']) | list }}"
+
+- name: Configure mailname
+  copy:
+    dest: /etc/mailname
+    content: "{{ postfix_mailname }}\n"
+
+- name: Deploy postfix main.cf
+  template:
+    src: postfix-main.cf.j2
+    dest: /etc/postfix/main.cf
+    mode: "0644"
+
+- name: Deploy postfix master.cf
+  template:
+    src: postfix-master.cf.j2
+    dest: /etc/postfix/master.cf
+    mode: "0644"
+
+- name: Deploy postfix virtual mailbox maps
+  template:
+    src: virtual-mailbox-maps.j2
+    dest: /etc/postfix/virtual_mailbox_maps
+    mode: "0644"
+  when: postfix_virtual_mailboxes | default([]) | length > 0
+
+- name: Compile postfix virtual mailbox maps
+  command: postmap /etc/postfix/virtual_mailbox_maps
+  when: postfix_virtual_mailboxes | default([]) | length > 0
+
+- name: Deploy dovecot core config
+  template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: "dovecot.conf.j2", dest: "/etc/dovecot/dovecot.conf" }
+    - { src: "dovecot-10-mail.conf.j2", dest: "/etc/dovecot/conf.d/10-mail.conf" }
+    - { src: "dovecot-10-auth.conf.j2", dest: "/etc/dovecot/conf.d/10-auth.conf" }
+    - { src: "dovecot-10-master.conf.j2", dest: "/etc/dovecot/conf.d/10-master.conf" }
+    - { src: "dovecot-10-ssl.conf.j2", dest: "/etc/dovecot/conf.d/10-ssl.conf" }
+
+- name: Deploy dovecot users file
+  template:
+    src: dovecot-users.j2
+    dest: /etc/dovecot/users
+    mode: "0644"
+
+- name: Create roundcube database
+  community.mysql.mysql_db:
+    name: "{{ roundcube_db_name }}"
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+
+- name: Create roundcube database user
+  community.mysql.mysql_user:
+    name: "{{ roundcube_db_user }}"
+    password: "{{ roundcube_db_password }}"
+    host: "localhost"
+    priv: "{{ roundcube_db_name }}.*:ALL"
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+
+- name: Deploy roundcube config
+  template:
+    src: roundcube-config.inc.php.j2
+    dest: /etc/roundcube/config.inc.php
+    mode: "0644"
+
+- name: Deploy roundcube DB config
+  template:
+    src: roundcube-debian-db.php.j2
+    dest: /etc/roundcube/debian-db.php
+    mode: "0644"
+
+- name: Deploy fix_dns script
+  template:
+    src: fix_dns.sh.j2
+    dest: /root/fix_dns.sh
+    mode: "0755"
+
+- name: Deploy fix_dns service
+  template:
+    src: fix-dns.service.j2
+    dest: /etc/systemd/system/fix-dns.service
+    mode: "0644"
+
+- name: Ensure directories exist for attachments and Maildir
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /root/payloads
+    - /root/Maildir
+
+- name: Deploy rangectl mail sender
+  template:
+    src: rangectl-send-mail.py.j2
+    dest: /usr/local/sbin/rangectl-send-mail
+    mode: "0755"
+
+- name: Ensure scheduled mail message directory exists
+  file:
+    path: /etc/rangectl-mail/messages
+    state: directory
+    mode: "0755"
+  when: postfix_schedule_seed_messages | default([]) | length > 0
+
+- name: Deploy scheduled lab mail messages
+  template:
+    src: rangectl-mail-message.json.j2
+    dest: "/etc/rangectl-mail/messages/{{ item.id }}.json"
+    mode: "0644"
+  loop: "{{ postfix_schedule_seed_messages | default([]) }}"
+
+- name: Deploy scheduled lab mail systemd services
+  template:
+    src: rangectl-mail.service.j2
+    dest: "/etc/systemd/system/rangectl-mail-{{ item.id }}.service"
+    mode: "0644"
+  loop: "{{ postfix_schedule_seed_messages | default([]) }}"
+
+- name: Deploy scheduled lab mail systemd timers
+  template:
+    src: rangectl-mail.timer.j2
+    dest: "/etc/systemd/system/rangectl-mail-{{ item.id }}.timer"
+    mode: "0644"
+  loop: "{{ postfix_schedule_seed_messages | default([]) }}"
+
+- name: Enable scheduled lab mail timers
+  systemd:
+    name: "rangectl-mail-{{ item.id }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ postfix_schedule_seed_messages | default([]) }}"
+  when: postfix_schedule_seed_messages_enabled | bool
+
+- name: Keep scheduled lab mail timers disabled
+  systemd:
+    name: "rangectl-mail-{{ item.id }}.timer"
+    enabled: false
+    state: stopped
+    daemon_reload: true
+  loop: "{{ postfix_schedule_seed_messages | default([]) }}"
+  when: not postfix_schedule_seed_messages_enabled | bool
+
+- name: Inspect existing postfix certificate identities
+  ansible.builtin.shell: |
+    set -eu
+    openssl x509 -in {{ postfix_cert_path | quote }} -noout -checkhost {{ postfix_hostname | quote }}
+    {% if ansible_host | default('') | length > 0 %}
+    openssl x509 -in {{ postfix_cert_path | quote }} -noout -checkip {{ ansible_host | quote }}
+    {% endif %}
+  args:
+    executable: /bin/sh
+  register: postfix_cert_hostname_check
+  changed_when: false
+  failed_when: false
+
+- name: Generate self-signed cert for postfix and dovecot
+  command: >
+    openssl req -x509 -nodes -newkey rsa:2048
+    -keyout {{ postfix_key_path }} -out {{ postfix_cert_path }}
+    -days 365 -subj "/CN={{ postfix_hostname }}"
+    -addext "subjectAltName=DNS:{{ postfix_hostname }}{% if ansible_host | default('') | length > 0 %},IP:{{ ansible_host }}{% endif %}"
+  when: postfix_cert_hostname_check.rc != 0
+
+- name: Ensure postfix key permissions
+  file:
+    path: "{{ postfix_key_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Reload services
+  systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  loop:
+    - mariadb
+    - postfix
+    - dovecot
+    - apache2
+    - fix-dns

@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import smtplib
+from base64 import b64decode
+from email.message import EmailMessage
+from pathlib import Path
+
+
+def build_message(data: dict) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = data["from"]
+    message["To"] = data["to"]
+    message["Subject"] = data["subject"]
+    if data.get("date"):
+        message["Date"] = data["date"]
+
+    message.set_content(data.get("body") or "Please review the attached material.")
+    if data.get("html"):
+        message.add_alternative(data["html"], subtype="html")
+
+    for attachment in data.get("attachments") or []:
+        filename = attachment.get("filename") or "attachment.bin"
+        content_type = attachment.get("content_type") or "application/octet-stream"
+        maintype, _, subtype = content_type.partition("/")
+        if not subtype:
+            maintype, subtype = "application", "octet-stream"
+        content = attachment.get("content") or ""
+        if attachment.get("base64"):
+            payload = b64decode(content)
+            message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
+        elif maintype == "text":
+            message.add_attachment(content, subtype=subtype, filename=filename)
+        else:
+            message.add_attachment(content.encode("utf-8"), maintype=maintype, subtype=subtype, filename=filename)
+    return message
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Submit a configured lab message over TCP SMTP.")
+    parser.add_argument("message", type=Path)
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", type=int, default=25)
+    parser.add_argument("--timeout", type=float, default=15)
+    args = parser.parse_args()
+
+    data = json.loads(args.message.read_text(encoding="utf-8"))
+    with smtplib.SMTP(args.host, args.port, timeout=args.timeout) as client:
+        client.ehlo()
+        refused = client.send_message(build_message(data))
+    if refused:
+        raise SystemExit(f"SMTP server refused recipients: {sorted(refused)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

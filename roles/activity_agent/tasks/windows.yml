@@ -1,0 +1,48 @@
+---
+- name: Stop Windows activity agent when requested
+  ansible.windows.win_powershell:
+    script: |
+      Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -like "*rangectl_lib.activity.agent*" } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  when: (activity_agent_state | default('started')) in ['stopped', 'absent']
+
+- name: Remove Windows activity Startup launcher when absent
+  ansible.windows.win_file:
+    path: "{{ activity_agent_startup_dir | default('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup') }}\\rangectl-activity.cmd"
+    state: absent
+  when: (activity_agent_state | default('started')) == 'absent'
+
+- name: Stop Windows activity role after lifecycle-only request
+  ansible.builtin.meta: end_host
+  when: (activity_agent_state | default('started')) in ['stopped', 'absent']
+
+- name: Ensure activity agent install directory exists
+  ansible.windows.win_file:
+    path: "{{ activity_agent_install_dir | default('C:\\ProgramData\\rangectl-activity') }}"
+    state: directory
+
+- name: Copy rangectl_lib source bundle
+  ansible.windows.win_copy:
+    src: "{{ activity_agent_source_root | default(playbook_dir ~ '/../../') }}rangectl_lib"
+    dest: "{{ activity_agent_install_dir | default('C:\\ProgramData\\rangectl-activity') }}\\"
+
+- name: Copy host activity config
+  ansible.windows.win_copy:
+    src: "{{ activity_agent_config_dir }}/{{ activity_agent_host_name | default(inventory_hostname) }}.activity.json"
+    dest: "{{ activity_agent_install_dir | default('C:\\ProgramData\\rangectl-activity') }}\\activity.json"
+
+- name: Deploy activity agent PowerShell launcher
+  ansible.windows.win_template:
+    src: activity-agent.ps1.j2
+    dest: "{{ activity_agent_install_dir | default('C:\\ProgramData\\rangectl-activity') }}\\activity-agent.ps1"
+
+- name: Ensure common Startup directory exists
+  ansible.windows.win_file:
+    path: "{{ activity_agent_startup_dir | default('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup') }}"
+    state: directory
+
+- name: Deploy activity agent Startup launcher
+  ansible.windows.win_template:
+    src: activity-agent.cmd.j2
+    dest: "{{ activity_agent_startup_dir | default('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup') }}\\rangectl-activity.cmd"

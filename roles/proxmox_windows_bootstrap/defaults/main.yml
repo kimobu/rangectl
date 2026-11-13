@@ -1,0 +1,4 @@
+---
+proxmox_windows_bootstrap_range_file: "{{ rangectl_range_file | default(rangectl_range_base ~ '/range.yml' if rangectl_range_base is defined else playbook_dir ~ '/../../range.yml') }}"
+proxmox_windows_bootstrap_adapter_pattern: "Ethernet*"
+proxmox_windows_bootstrap_reboot_timeout: 900

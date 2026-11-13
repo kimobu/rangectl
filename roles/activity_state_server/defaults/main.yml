@@ -1,0 +1,8 @@
+---
+activity_state_server_install_dir: /opt/rangectl-activity-state-server
+activity_state_server_data_dir: /var/lib/rangectl-activity-state
+activity_state_server_config_dir: /etc/rangectl-activity-state
+activity_state_server_listen: 0.0.0.0
+activity_state_server_port: 8766
+activity_state_server_user: rangectl-activity
+activity_state_server_group: rangectl-activity

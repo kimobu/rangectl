@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>EmailAccountDescription</key>
+      <string>{{ mail_app_imap_profile_display_name }}</string>
+      <key>EmailAccountName</key>
+      <string>{{ mail_app_imap_account_name }}</string>
+      <key>EmailAccountType</key>
+      <string>EmailTypeIMAP</string>
+      <key>EmailAddress</key>
+      <string>{{ mail_app_imap_email }}</string>
+      <key>IncomingMailServerAuthentication</key>
+      <string>EmailAuthPassword</string>
+      <key>IncomingMailServerHostName</key>
+      <string>{{ mail_app_imap_incoming_host }}</string>
+      <key>IncomingMailServerPortNumber</key>
+      <integer>{{ mail_app_imap_incoming_port }}</integer>
+      <key>IncomingMailServerUseSSL</key>
+      <{{ 'true' if mail_app_imap_incoming_ssl | bool else 'false' }}/>
+      <key>IncomingMailServerUsername</key>
+      <string>{{ mail_app_imap_username }}</string>
+      <key>OutgoingMailServerAuthentication</key>
+      <string>EmailAuthNone</string>
+      <key>OutgoingMailServerHostName</key>
+      <string>{{ mail_app_imap_outgoing_host }}</string>
+      <key>OutgoingMailServerPortNumber</key>
+      <integer>{{ mail_app_imap_outgoing_port }}</integer>
+      <key>OutgoingMailServerUseSSL</key>
+      <{{ 'true' if mail_app_imap_outgoing_ssl | bool else 'false' }}/>
+      <key>OutgoingMailServerUsername</key>
+      <string>{{ mail_app_imap_username }}</string>
+      <key>PayloadDisplayName</key>
+      <string>{{ mail_app_imap_profile_display_name }}</string>
+      <key>PayloadIdentifier</key>
+      <string>{{ mail_app_imap_identifier }}.account</string>
+      <key>PayloadType</key>
+      <string>com.apple.mail.managed</string>
+      <key>PayloadUUID</key>
+      <string>{{ (mail_app_imap_identifier ~ '.account') | to_uuid }}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>{{ mail_app_imap_profile_description }}</string>
+  <key>PayloadDisplayName</key>
+  <string>{{ mail_app_imap_profile_display_name }}</string>
+  <key>PayloadIdentifier</key>
+  <string>{{ mail_app_imap_identifier }}</string>
+  <key>PayloadOrganization</key>
+  <string>{{ mail_app_imap_profile_organization }}</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>{{ mail_app_imap_identifier | to_uuid }}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

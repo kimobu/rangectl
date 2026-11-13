@@ -1,0 +1,106 @@
+- name: Set ComputerName
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - ComputerName
+      - "{{ member_computer_name }}"
+  register: macos_set_computer_name
+  changed_when: true
+
+- name: Set HostName
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - HostName
+      - "{{ member_computer_name }}"
+  register: macos_set_host_name
+  changed_when: true
+
+- name: Set LocalHostName
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - LocalHostName
+      - "{{ member_computer_name }}"
+  register: macos_set_local_host_name
+  changed_when: true
+
+- name: Detect primary network service
+  ansible.builtin.shell: |
+    set -eu
+    service=""
+    current=""
+    while IFS= read -r line; do
+      case "$line" in
+        "Hardware Port: "*) current="${line#Hardware Port: }" ;;
+        "Device: en0") service="$current"; break ;;
+      esac
+    done < <(/usr/sbin/networksetup -listallhardwareports)
+    if [ -z "$service" ]; then
+      service="$(/usr/sbin/networksetup -listallnetworkservices | sed '1d' | sed '/^\*/d' | head -n 1)"
+    fi
+    printf '%s\n' "$service"
+  args:
+    executable: /bin/bash
+  register: macos_primary_network_service
+  changed_when: false
+
+- name: Configure DNS servers for the primary network service
+  ansible.builtin.command:
+    argv: "{{ ['/usr/sbin/networksetup', '-setdnsservers', macos_primary_network_service.stdout] + member_dns_servers }}"
+  when:
+    - macos_primary_network_service.stdout | length > 0
+    - member_dns_servers | length > 0
+
+- name: Configure search domains for the primary network service
+  ansible.builtin.command:
+    argv: "{{ ['/usr/sbin/networksetup', '-setsearchdomains', macos_primary_network_service.stdout] + member_search_domains }}"
+  when:
+    - macos_primary_network_service.stdout | length > 0
+    - member_search_domains | length > 0
+
+- name: Bind managed macOS host to Active Directory
+  macos_dsconfigad:
+    domain: "{{ member_domain }}"
+    username: "{{ member_domain_username }}"
+    password: "{{ member_domain_password }}"
+    computer_id: "{{ member_computer_name }}"
+    ou: "{{ member_computer_ou }}"
+    preferred_dc: "{{ member_domain_server }}"
+    mobile: true
+    mobileconfirm: false
+    localhome: true
+    use_unc_path: false
+
+- name: Remove legacy profile onboarding files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ macos_domain_join_legacy_onboarding_paths }}"
+
+- name: Create rangectl onboarding directory
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl
+    state: directory
+    mode: '0755'
+
+- name: Create rangectl profile staging directory
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl/profiles
+    state: directory
+    mode: '0755'
+
+- name: Install rangectl profile onboarding helper
+  ansible.builtin.template:
+    src: open-profile-on-login.sh.j2
+    dest: /Library/Application Support/rangectl/open-profile-on-login.sh
+    mode: '0755'
+
+- name: Install rangectl onboarding LaunchAgent
+  ansible.builtin.template:
+    src: local.rangectl.profile-onboarding.plist.j2
+    dest: /Library/LaunchAgents/local.rangectl.profile-onboarding.plist
+    mode: '0644'

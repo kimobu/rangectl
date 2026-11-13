@@ -1,0 +1,48 @@
+# https://answers.microsoft.com/en-us/protect/forum/protect_defender-protect_start-windows_10/how-do-i-stop-sending-antivirus-samples-to/a2e7b280-a8ba-43f5-b391-0a12c109f990
+- name: Detect ServerManager availability (needed for win_feature)
+  win_shell: |
+    if (Get-Module -ListAvailable -Name ServerManager) { Write-Host "available" }
+  register: servermanager_check
+  changed_when: false
+
+- name: Install windows defender (only if ServerManager is available)
+  win_feature:
+    name: Windows-Defender
+  register: win_defender_install
+  when: "'available' in servermanager_check.stdout"
+
+- name: Reboot if needed
+  win_reboot:
+    reboot_timeout: 600
+    post_reboot_delay: 30
+  when: win_defender_install is defined and (win_defender_install.reboot_required | default(false))
+
+- name: Detect Windows Defender service state
+  win_shell: |
+    $service = Get-Service -Name WinDefend -ErrorAction SilentlyContinue
+    if ($null -eq $service) { "absent" } else { $service.Status.ToString().ToLower() }
+  register: win_defender_service
+  changed_when: false
+
+- name: Disable windows defender sending sample
+  win_shell: Set-MpPreference -MAPSReporting 0
+  when: win_defender_service.stdout | trim == "running"
+
+- name: Disable windows defender sending sample #2 : never send
+  win_shell: Set-MpPreference -SubmitSamplesConsent 2
+  when: win_defender_service.stdout | trim == "running"
+
+- name: Disable network drive scanning
+  win_shell: Set-MpPreference -DisableScanningMappedNetworkDrivesForFullScan $true
+  when:
+    - windows_defender_status == "off"
+    - win_defender_service.stdout | trim == "running"
+
+- name: Disable realtime monitoring
+  win_shell: Set-MpPreference -DisableRealtimeMonitoring $true
+  when:
+    - windows_defender_status == "off"
+    - win_defender_service.stdout | trim == "running"
+
+#- name: Uninstall windows defender
+#  win_shell: Uninstall-WindowsFeature -Name Windows-Defender

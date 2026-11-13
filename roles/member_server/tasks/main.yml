@@ -1,0 +1,42 @@
+# DNSCHANGE
+- name: Resolve member server domain membership from lab data
+  ansible.builtin.set_fact:
+    member_domain_resolved: "{{ lab.hosts.get(dict_key, {}).get('domain', member_domain) if (lab is defined and dict_key is defined) else member_domain }}"
+
+- name: Resolve member server domain credentials
+  ansible.builtin.set_fact:
+    domain_username_resolved: "{{ (admin_user ~ '@' ~ member_domain_resolved) if admin_user is defined else domain_username }}"
+    domain_password_resolved: "{{ (lab.domains.get(member_domain_resolved, {}).get('domain_password') if lab is defined else None) or domain_password }}"
+
+- name: "prioritize the {{domain_adapter}} interface (local) as the default for routing"
+  ansible.windows.win_shell:
+    Set-NetIPInterface -InterfaceAlias "{{domain_adapter}}" -InterfaceMetric 10
+  when: two_adapters
+
+- name: "Set configure dns to {{dns_domain}}"
+  win_dns_client:
+    adapter_names: "{{domain_adapter}}"
+    ipv4_addresses:
+    - "{{hostvars[dns_domain].ansible_host}}"
+    log_path: C:\dns_log.txt
+
+- name: Verify File Server Role is installed.
+  win_feature:
+    name: File-Services, FS-FileServer
+    state: present
+    include_management_tools: True
+
+- name: "Add member server"
+  win_domain_membership:
+    dns_domain_name: "{{ member_domain_resolved }}"
+    domain_admin_user: "{{ domain_username_resolved }}"
+    domain_admin_password: "{{ domain_password_resolved }}"
+#    domain_ou_path: "{{member_domain_ou_path}}"
+    state: domain
+  register: domain_state
+
+- name: Reboot if needed
+  win_reboot:
+    reboot_timeout: 1500
+    post_reboot_delay: 100
+  when: domain_state.reboot_required

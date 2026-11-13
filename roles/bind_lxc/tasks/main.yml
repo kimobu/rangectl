@@ -1,0 +1,116 @@
+- name: Force apt to use IPv4
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99force-ipv4
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Acquire::ForceIPv4 "true";
+
+- name: Install bind packages
+  block:
+    - name: Install bind packages from configured apt sources
+      ansible.builtin.apt:
+        name: "{{ bind_packages }}"
+        state: present
+        update_cache: false
+      register: bind_package_install
+      until: bind_package_install is succeeded
+      retries: 3
+      delay: 10
+  rescue:
+    - name: Collect bind package download URIs from target apt cache
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apt-get --print-uris --yes install {{ bind_packages | map('quote') | join(' ') }} \
+          | sed -n "s/^'\([^']*\.deb\)'.*/\1/p"
+      args:
+        executable: /bin/bash
+      register: bind_package_deb_uris
+      changed_when: false
+
+    - name: Fail if no local package fallback URIs were found
+      ansible.builtin.fail:
+        msg: >
+          apt package install failed and the target apt cache did not provide
+          downloadable .deb URIs for {{ bind_packages | join(', ') }}.
+          Check grey VLAN Internet egress or refresh the LXC template apt cache.
+      when: bind_package_deb_uris.stdout_lines | length == 0
+
+    - name: Create local bind package download directory
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: rangectl-bind-debs
+      register: bind_package_local_dir
+      delegate_to: localhost
+      become: false
+
+    - name: Download bind packages from controller
+      ansible.builtin.get_url:
+        url: "{{ item }}"
+        dest: "{{ bind_package_local_dir.path }}/{{ item | basename }}"
+        mode: "0644"
+        timeout: 30
+      loop: "{{ bind_package_deb_uris.stdout_lines }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Create remote bind package staging directory
+      ansible.builtin.file:
+        path: /tmp/rangectl-bind-debs
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy bind packages to target
+      ansible.builtin.copy:
+        src: "{{ bind_package_local_dir.path }}/{{ item | basename }}"
+        dest: "/tmp/rangectl-bind-debs/{{ item | basename }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ bind_package_deb_uris.stdout_lines }}"
+
+    - name: Install copied bind packages locally
+      ansible.builtin.shell: |
+        set -euo pipefail
+        apt-get install -y /tmp/rangectl-bind-debs/*.deb
+      args:
+        executable: /bin/bash
+
+- name: Deploy named.conf.options
+  ansible.builtin.template:
+    src: named.conf.options.j2
+    dest: /etc/bind/named.conf.options
+    owner: root
+    group: bind
+    mode: "0644"
+  notify: Restart bind9
+
+- name: Deploy named.conf.local
+  ansible.builtin.template:
+    src: named.conf.local.j2
+    dest: /etc/bind/named.conf.local
+    owner: root
+    group: bind
+    mode: "0644"
+  notify: Restart bind9
+
+- name: Deploy operator-defined authoritative zones
+  ansible.builtin.template:
+    src: db.extra-zone.j2
+    dest: "/etc/bind/db.{{ item.name }}"
+    owner: root
+    group: bind
+    mode: "0644"
+  loop: "{{ bind_extra_zones | default([]) }}"
+  vars:
+    bind_ip: "{{ hostvars[inventory_hostname].ansible_host }}"
+  notify: Restart bind9
+
+- name: Ensure bind9 is enabled and running
+  ansible.builtin.service:
+    name: bind9
+    enabled: true
+    state: started

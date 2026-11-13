@@ -1,0 +1,14 @@
+---
+sccm_cross_domain_site_domain: "{{ sccm_site_domain | default('') }}"
+sccm_cross_domain_site_code: "{{ lab.domains[sccm_cross_domain_site_domain].sccm.site_code | default('P01') }}"
+sccm_cross_domain_site_server: "{{ sccm_site_server | default(lab.domains[sccm_cross_domain_site_domain].sccm.sccm_server ~ '.' ~ sccm_cross_domain_site_domain) }}"
+sccm_cross_domain_management_point: "{{ sccm_management_point | default(sccm_cross_domain_site_server) }}"
+sccm_cross_domain_server_ip: "{{ hostvars[lab.domains[sccm_cross_domain_site_domain].sccm.sccm_server].ansible_host | default('') }}"
+sccm_cross_domain_cache_dir: C:\setup\ccmsetup
+sccm_cross_domain_source_username: "{{ sccm_site_access_username | default(lab.domains[sccm_cross_domain_site_domain].sccm.push_account ~ '@' ~ sccm_cross_domain_site_domain, true) }}"
+sccm_cross_domain_source_password: "{{ sccm_site_access_password | default(lab.domains[sccm_cross_domain_site_domain].users[lab.domains[sccm_cross_domain_site_domain].sccm.push_account].password, true) }}"
+sccm_cross_domain_install_properties:
+  - "SMSSITECODE={{ sccm_cross_domain_site_code }}"
+  - "SMSMP={{ sccm_cross_domain_management_point }}"
+sccm_cross_domain_setup_parameters:
+  - "/mp:{{ sccm_cross_domain_management_point }}"

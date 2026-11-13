@@ -1,0 +1,55 @@
+# Example template catalog. Copy this into a content pack or override it with a
+# range-local templates/*.yml file when your Proxmox template IDs differ.
+proxmox:
+  aliases:
+    win2019: WinServer2019_x64
+    win2016: WinServer2016_x64
+    win2012r2: WinServer2012R2_x64
+    win11: Windows11_LTSC_x64
+    win11-ltsc: Windows11_LTSC_x64
+    win11-24h2: Windows11_LTSC_x64
+    win10-ltsc: Windows10_LTSC_x64
+    win10-22h2: Windows10_LTSC_x64
+    pfsense: pfsense
+    ubuntu-2404: Ubuntu2404_x64
+    macos-ventura: MacOSVentura_x64
+    macos-sonoma: MacOSSonoma_x64
+
+  vm_templates:
+    WinServer2019_x64:
+      vmid: 900
+      name: template-windows-server2019-cloudinit
+      description: Windows Server 2019 Datacenter cloud-init template
+    WinServer2016_x64:
+      vmid: 901
+      name: template-windows-server2016-cloudinit
+      description: Windows Server 2016 Datacenter cloud-init template
+    WinServer2012R2_x64:
+      vmid: 902
+      name: template-windows-server2012r2-cloudinit
+      description: Windows Server 2012 R2 Datacenter cloud-init template
+    Windows10_LTSC_x64:
+      vmid: 904
+      name: template-windows10-ltsc-cloudinit
+      description: Windows 10 Enterprise LTSC cloud-init template
+    pfsense:
+      vmid: 905
+      description: pfSense template
+    Windows11_LTSC_x64:
+      vmid: 906
+      name: template-windows11-ltsc-cloudinit
+      description: Windows 11 Enterprise LTSC cloud-init template
+    Ubuntu2404_x64:
+      vmid: 907
+      description: Ubuntu 24.04 x64 template
+    MacOSVentura_x64:
+      vmid: 908
+      description: macOS Ventura template
+    MacOSSonoma_x64:
+      vmid: 909
+      description: macOS Sonoma template
+
+  lxc_templates:
+    ubuntu-2404-lxc:
+      file_id: local:vztmpl/ubuntu-24.04-standard_24.04-2_amd64.tar.zst
+      description: Ubuntu 24.04 LXC template

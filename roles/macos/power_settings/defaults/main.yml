@@ -1,0 +1,5 @@
+---
+macos_power_settings_enabled: true
+macos_power_settings_user: "{{ ansible_user | default('admin') }}"
+macos_power_settings_noidle_label: local.rangectl.noidle
+macos_power_settings_noidle_plist: "/Library/LaunchDaemons/{{ macos_power_settings_noidle_label }}.plist"

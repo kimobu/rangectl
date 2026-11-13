@@ -1,0 +1,11 @@
+- name: Enable shares that can be accessed anonymously
+  community.windows.win_security_policy:
+    section: Registry Values
+    key: MACHINE\System\CurrentControlSet\Services\LanManServer\Parameters\NullSessionShares
+    value: 7,IPC$,ADMIN$
+  
+- name: Enable named pipes that can be accessed
+  community.windows.win_security_policy:
+    section: Registry Values
+    key: MACHINE\System\CurrentControlSet\Services\LanManServer\Parameters\NullSessionPipes
+    value: 7,netlogon,samr,lsarpc

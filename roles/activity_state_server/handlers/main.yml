@@ -1,0 +1,6 @@
+---
+- name: Restart rangectl activity state server
+  ansible.builtin.systemd:
+    name: rangectl-activity-state-server.service
+    state: restarted
+    daemon_reload: true

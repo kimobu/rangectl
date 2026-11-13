@@ -1,0 +1,35 @@
+redirector_packages:
+  - socat
+  - postfix
+  - tcpdump
+  - tmux
+  - netcat-openbsd
+  - telnet
+  - ftp
+  - bind9-dnsutils
+
+redirector_target: mythic
+redirector_target_map:
+  sliver:
+    host_key: sliver
+    ip: "{{ grey_ip_range | default('10.60.0', true) }}.113"
+  mythic:
+    ip: "10.60.0.112"
+  kali:
+    ip: "10.60.0.110"
+
+redirector_target_host: "{{ redirector_target_map[redirector_target].get('ip', '') }}"
+
+redirector_redirects:
+  - name: socat-80-to-10_10_10_233_8000
+    listen_addr: "0.0.0.0"
+    listen_port: 80
+    target_host: "{{ redirector_target_host }}"
+    target_port: 8000
+    socket_options: "reuseaddr,fork"
+  - name: socat-443-to-10_10_41_109_53000
+    listen_addr: "0.0.0.0"
+    listen_port: 443
+    target_host: "{{ redirector_target_host }}"
+    target_port: 53000
+    socket_options: "reuseaddr,fork"

@@ -1,0 +1,9 @@
+- name: "Reboot all"
+  hosts: domain
+  tasks:
+    - name: "reboot"
+      win_reboot:
+        reboot_timeout: "{{ rangectl_reboot_timeout | default(600) }}"
+        post_reboot_delay: "{{ rangectl_post_reboot_delay | default(30) }}"
+      register: rangectl_reboot
+      failed_when: false

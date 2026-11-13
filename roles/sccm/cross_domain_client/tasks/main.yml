@@ -1,0 +1,186 @@
+---
+- name: Determine whether cross-domain MECM bootstrap is needed
+  ansible.builtin.set_fact:
+    sccm_cross_domain_enabled: >-
+      {{
+        sccm_cross_domain_site_domain | length > 0
+        and lab.hosts[dict_key].domain != sccm_cross_domain_site_domain
+      }}
+
+- name: Show cross-domain MECM bootstrap scope
+  ansible.builtin.debug:
+    msg: "Skipping cross-domain MECM bootstrap for {{ inventory_hostname }}"
+  when: not sccm_cross_domain_enabled
+
+- name: Configure hosts entry for MECM site server
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param (
+        [String] $ServerFqdn,
+        [String] $ServerIp
+      )
+
+      $Ansible.Changed = $false
+      if ([string]::IsNullOrWhiteSpace($ServerIp)) {
+        throw "No IP address was resolved for $ServerFqdn from inventory."
+      }
+
+      $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+      $shortName = $ServerFqdn.Split('.')[0]
+      $desired = "$ServerIp`t$ServerFqdn $shortName"
+      $lines = @()
+      if (Test-Path $hostsPath) {
+        $lines = Get-Content -Path $hostsPath
+      }
+
+      $filtered = $lines | Where-Object {
+        $_ -notmatch "(?i)(^|\s)$([regex]::Escape($ServerFqdn))(\s|$)" -and
+        $_ -notmatch "(?i)(^|\s)$([regex]::Escape($shortName))(\s|$)"
+      }
+
+      if (($lines -join "`n") -ne (($filtered + $desired) -join "`n")) {
+        Set-Content -Path $hostsPath -Value ($filtered + $desired) -Encoding ASCII
+        $Ansible.Changed = $true
+      }
+    parameters:
+      ServerFqdn: "{{ sccm_cross_domain_site_server }}"
+      ServerIp: "{{ sccm_cross_domain_server_ip }}"
+  when: sccm_cross_domain_enabled
+
+- name: Ensure MECM client cache directory exists
+  ansible.windows.win_file:
+    path: "{{ sccm_cross_domain_cache_dir }}"
+    state: directory
+  when: sccm_cross_domain_enabled
+
+- name: Copy MECM client installer from site server
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param (
+        [String] $ServerFqdn,
+        [String] $SiteCode,
+        [String] $Destination,
+        [String] $Username,
+        [String] $Password
+      )
+
+      $Ansible.Changed = $false
+      $sourceRoot = "\\$ServerFqdn\SMS_$SiteCode\Client"
+      $sourcePath = $sourceRoot
+      $driveName = "RANGECTLCCM"
+
+      try {
+        if (-not [string]::IsNullOrWhiteSpace($Username)) {
+          $securePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
+          $credential = New-Object System.Management.Automation.PSCredential($Username, $securePassword)
+          if (Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue) {
+            Remove-PSDrive -Name $driveName -Force
+          }
+          New-PSDrive -Name $driveName -PSProvider FileSystem -Root $sourceRoot -Credential $credential | Out-Null
+          $sourcePath = "$driveName`:\"
+        }
+
+        if (-not (Test-Path (Join-Path $sourcePath "ccmsetup.exe"))) {
+          throw "Unable to access ccmsetup.exe under $sourceRoot"
+        }
+
+        Copy-Item -Path (Join-Path $sourcePath "*") -Destination $Destination -Recurse -Force
+      } finally {
+        if (Get-PSDrive -Name $driveName -ErrorAction SilentlyContinue) {
+          Remove-PSDrive -Name $driveName -Force
+        }
+      }
+    parameters:
+      ServerFqdn: "{{ sccm_cross_domain_site_server }}"
+      SiteCode: "{{ sccm_cross_domain_site_code }}"
+      Destination: "{{ sccm_cross_domain_cache_dir }}"
+      Username: "{{ sccm_cross_domain_source_username }}"
+      Password: "{{ sccm_cross_domain_source_password }}"
+  no_log: true
+  when: sccm_cross_domain_enabled
+
+- name: Install or assign MECM client
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param (
+        [String] $CacheDir,
+        [String] $SiteCode,
+        [String[]] $SetupParameters,
+        [String[]] $InstallProperties
+      )
+
+      $Ansible.Changed = $false
+      $ccmSetup = Join-Path $CacheDir "ccmsetup.exe"
+      if (-not (Test-Path $ccmSetup)) {
+        throw "Missing $ccmSetup"
+      }
+
+      $assignedSite = ""
+      $mobileClient = "HKLM:\SOFTWARE\Microsoft\SMS\Mobile Client"
+      if (Test-Path $mobileClient) {
+        $assignedSite = (Get-ItemProperty -Path $mobileClient -ErrorAction SilentlyContinue).AssignedSiteCode
+      }
+      $service = Get-Service -Name CcmExec -ErrorAction SilentlyContinue
+
+      if ($service -and $assignedSite -eq $SiteCode) {
+        $Ansible.Result = "MECM client already installed and assigned to $SiteCode"
+        return
+      }
+
+      $arguments = @()
+      $arguments += $SetupParameters
+      $arguments += $InstallProperties
+      $process = Start-Process -FilePath $ccmSetup -ArgumentList $arguments -Wait -PassThru
+      if ($process.ExitCode -ne 0) {
+        throw "ccmsetup exited with code $($process.ExitCode)"
+      }
+
+      $Ansible.Changed = $true
+      $Ansible.Result = "Started MECM client bootstrap for site $SiteCode"
+    parameters:
+      CacheDir: "{{ sccm_cross_domain_cache_dir }}"
+      SiteCode: "{{ sccm_cross_domain_site_code }}"
+      SetupParameters: "{{ sccm_cross_domain_setup_parameters }}"
+      InstallProperties: "{{ sccm_cross_domain_install_properties }}"
+  when: sccm_cross_domain_enabled
+
+- name: Wait for MECM client assignment
+  ansible.windows.win_powershell:
+    script: |
+      [CmdletBinding()]
+      param (
+        [String] $SiteCode,
+        [Int32] $TimeoutSeconds
+      )
+
+      $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+      do {
+        $service = Get-Service -Name CcmExec -ErrorAction SilentlyContinue
+        $assignedSite = ""
+        $mobileClient = "HKLM:\SOFTWARE\Microsoft\SMS\Mobile Client"
+        if (Test-Path $mobileClient) {
+          $assignedSite = (Get-ItemProperty -Path $mobileClient -ErrorAction SilentlyContinue).AssignedSiteCode
+        }
+
+        if ($service -and $assignedSite -eq $SiteCode) {
+          $Ansible.Changed = $false
+          $Ansible.Result = "MECM client assigned to $SiteCode"
+          return
+        }
+
+        Start-Sleep -Seconds 30
+      } while ((Get-Date) -lt $deadline)
+
+      $log = "C:\Windows\ccmsetup\Logs\ccmsetup.log"
+      $tail = ""
+      if (Test-Path $log) {
+        $tail = (Get-Content $log -Tail 40) -join "`n"
+      }
+      throw "MECM client did not assign to $SiteCode within $TimeoutSeconds seconds.`n$tail"
+    parameters:
+      SiteCode: "{{ sccm_cross_domain_site_code }}"
+      TimeoutSeconds: "{{ sccm_cross_domain_assignment_timeout | default(1800) }}"
+  when: sccm_cross_domain_enabled

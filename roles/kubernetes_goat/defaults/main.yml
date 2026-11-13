@@ -1,0 +1,45 @@
+---
+kubernetes_goat_packages:
+  - ca-certificates
+  - curl
+  - git
+  - qemu-guest-agent
+  - snapd
+
+kubernetes_goat_microk8s_channel: "1.35/stable"
+kubernetes_goat_microk8s_addons:
+  - dns
+  - hostpath-storage
+  - helm3
+
+kubernetes_goat_repo_url: "https://github.com/madhuakula/kubernetes-goat.git"
+kubernetes_goat_repo_version: "master"
+kubernetes_goat_install_dir: "/opt/kubernetes-goat"
+
+kubernetes_goat_zeek_enabled: true
+kubernetes_goat_zeek_image: "docker.io/zeek/zeek:8.2.0"
+kubernetes_goat_zeek_log_dir: /var/log/zeek
+kubernetes_goat_zeek_log_rotate_size: 25M
+kubernetes_goat_zeek_log_rotate_count: 4
+kubernetes_goat_zeek_deployments:
+  - { namespace: default, name: metadata-db }
+  - { namespace: default, name: internal-proxy-deployment }
+  - { namespace: default, name: system-monitor-deployment }
+  - { namespace: default, name: poor-registry-deployment }
+  - { namespace: big-monolith, name: hunger-check-deployment }
+
+kubernetes_goat_aws_secret_enabled: true
+kubernetes_goat_aws_secret_manifest_src: "{{ rangectl_state_dir | default(role_path ~ '/../../state/' ~ (range_name | default('default'))) }}/render/tofu/aws/aws-workstation-creds-secret.yaml"
+kubernetes_goat_aws_secret_remote_path: /tmp/rangectl-aws-workstation-creds-secret.yaml
+
+kubernetes_goat_manifest_files:
+  # Scenario 3: SSRF in the Kubernetes world.
+  - scenarios/internal-proxy/deployment.yaml
+  # Scenario 4: Container escape to the host system.
+  - scenarios/system-monitor/deployment.yaml
+  # Scenario 7: Attacking private registry.
+  - scenarios/poor-registry/deployment.yaml
+  # Scenario 15: Hidden in layers.
+  - scenarios/hidden-in-layers/deployment.yaml
+  # Scenario 16: RBAC least privileges misconfiguration.
+  - scenarios/hunger-check/deployment.yaml

@@ -1,0 +1,60 @@
+---
+- name: Skip macOS power settings when disabled
+  ansible.builtin.meta: end_host
+  when: not macos_power_settings_enabled | bool
+
+- name: Disable macOS system and display sleep
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    /usr/bin/pmset -a sleep 0 displaysleep 0 disksleep 0 2>/dev/null || true
+    /usr/bin/pmset -a powernap 0 womp 0 tcpkeepalive 0 2>/dev/null || true
+    /usr/bin/pmset -a standby 0 autopoweroff 0 hibernatemode 0 2>/dev/null || true
+    /usr/sbin/systemsetup -setcomputersleep Never >/dev/null 2>&1 || true
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Disable macOS screensaver password and idle lock
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    user="{{ macos_power_settings_user }}"
+    /usr/bin/sudo -u "$user" /usr/bin/defaults -currentHost write com.apple.screensaver idleTime -int 0
+    /usr/bin/sudo -u "$user" /usr/bin/defaults write com.apple.screensaver askForPassword -int 0
+    /usr/bin/sudo -u "$user" /usr/bin/defaults write com.apple.screensaver askForPasswordDelay -int 0
+    /usr/bin/sudo -u "$user" /usr/bin/defaults write com.apple.screensaver idleTime -int 0
+    /usr/bin/defaults write /Library/Preferences/com.apple.screensaver loginWindowIdleTime -int 0
+    /usr/bin/killall cfprefsd 2>/dev/null || true
+    /usr/bin/killall ScreenSaverEngine 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Install persistent macOS no-idle LaunchDaemon
+  become: true
+  ansible.builtin.template:
+    src: noidle.plist.j2
+    dest: "{{ macos_power_settings_noidle_plist }}"
+    owner: root
+    group: wheel
+    mode: "0644"
+  register: macos_power_settings_noidle_plist_result
+
+- name: Reload persistent macOS no-idle LaunchDaemon
+  become: true
+  ansible.builtin.shell: |
+    set -e
+    /bin/launchctl bootout system "{{ macos_power_settings_noidle_plist }}" >/dev/null 2>&1 || true
+    /bin/launchctl bootstrap system "{{ macos_power_settings_noidle_plist }}"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: macos_power_settings_noidle_plist_result.changed
+
+- name: Ensure persistent macOS no-idle LaunchDaemon is running
+  become: true
+  ansible.builtin.command:
+    cmd: "/bin/launchctl kickstart -k system/{{ macos_power_settings_noidle_label }}"
+  changed_when: false
+  failed_when: false

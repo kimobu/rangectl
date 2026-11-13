@@ -1,0 +1,66 @@
+$ErrorActionPreference = "Stop"
+
+{% if humansim_expected_user is defined and humansim_expected_user %}
+$expectedUser = "{{ humansim_expected_user }}"
+if ($env:USERNAME -ne $expectedUser) {
+    exit 0
+}
+{% endif %}
+
+$src = "{{ humansim_source_unc }}"
+$base = Join-Path $env:LOCALAPPDATA "humansim"
+$venv = Join-Path $base "venv"
+
+$existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -like "*human.py*" -and $_.CommandLine -like "*humansim*" }
+if ($existing) {
+    exit 0
+}
+
+if (-not (Test-Path $base)) {
+    New-Item -ItemType Directory -Path $base -Force | Out-Null
+}
+
+if (Test-Path $src) {
+    cmd.exe /c "robocopy `"$src`" `"$base`" /MIR /XD venv /XF chromedriver.exe /R:2 /W:2 /NFL /NDL /NJH /NJS /NP >nul & if %ERRORLEVEL% LEQ 7 (exit /b 0) else (exit /b %ERRORLEVEL%)"
+} else {
+    throw "humansim source path not reachable: $src"
+}
+
+$driverSrc = "{{ humansim_driver_unc }}"
+$driverLocal = Join-Path $base "chromedriver.exe"
+if (-not (Test-Path $driverLocal)) {
+    Copy-Item -Path $driverSrc -Destination $driverLocal -Force
+}
+$env:HUMANSIM_CHROMEDRIVER_PATH = $driverLocal
+
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    throw "python.exe not found in PATH; install Python (e.g., from U:\\IT) before humansim."
+}
+
+if (-not (Test-Path $venv)) {
+    python -m venv $venv
+}
+
+$pip = Join-Path $venv "Scripts\\pip.exe"
+$python = Join-Path $venv "Scripts\\python.exe"
+
+$requirements = Join-Path $base "requirements.txt"
+$marker = Join-Path $venv "rangectl.requirements.installed"
+if ((Test-Path $requirements) -and ((-not (Test-Path $marker)) -or ((Get-Item $marker).LastWriteTime -lt (Get-Item $requirements).LastWriteTime))) {
+    Start-Process -FilePath $pip -ArgumentList "install --upgrade pip" -WorkingDirectory $base -Wait
+    Start-Process -FilePath $pip -ArgumentList "install -r `"$requirements`"" -WorkingDirectory $base -Wait
+    New-Item -ItemType File -Path $marker -Force | Out-Null
+}
+
+$scriptPath = Join-Path $base "human.py"
+$args = @(
+    $scriptPath,
+    "--clustersize", "{{ humansim_clustersize | default(5) }}",
+    "--taskinterval", "{{ humansim_taskinterval | default(10) }}",
+    "--taskgroupinterval", "{{ humansim_taskgroupinterval | default(500) }}"
+)
+{% if humansim_extra is defined and humansim_extra %}
+$args += @("--extra", "{{ humansim_extra }}")
+{% endif %}
+Start-Process -FilePath $python -ArgumentList $args -WorkingDirectory $base

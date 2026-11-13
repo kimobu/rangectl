@@ -1,0 +1,90 @@
+---
+- name: Select Security Onion artifact keys
+  ansible.builtin.set_fact:
+    seconion_selected_artifact_keys: "{{ seconion_artifact_keys | default(seconion_artifacts | dict2items | map(attribute='key') | list) }}"
+
+- name: Ensure local Security Onion artifact cache exists
+  ansible.builtin.file:
+    path: "{{ seconion_artifact_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Check local Security Onion Elastic Agent artifacts
+  ansible.builtin.stat:
+    path: "{{ seconion_artifact_dir }}/{{ seconion_artifacts[item].filename }}"
+  loop: "{{ seconion_selected_artifact_keys }}"
+  register: seconion_artifact_stats
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Check for Security Onion package auth env file
+  ansible.builtin.stat:
+    path: "{{ seconion_artifact_auth_env_file | default('~/.seconion.env') | expanduser }}"
+  register: seconion_artifact_auth_env_stat
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Populate Security Onion Elastic Agent artifacts with authenticated fetch
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ role_path }}/files/fetch_so_artifact.py"
+      - --url
+      - "{{ seconion_package_base_url }}/{{ seconion_artifacts[item.item].url_name }}"
+      - --dest
+      - "{{ seconion_artifact_dir }}/{{ seconion_artifacts[item.item].filename }}"
+      - --env-file
+      - "{{ seconion_artifact_auth_env_file | default('~/.seconion.env') }}"
+      - --timeout
+      - "{{ seconion_artifact_timeout }}"
+      - --min-size
+      - "{{ seconion_artifact_min_size | default(1000000) }}"
+  loop: "{{ seconion_artifact_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+  when:
+    - seconion_artifact_auth_env_stat.stat.exists
+    - (seconion_artifact_refresh_with_auth | default(true) | bool) or not item.stat.exists
+
+- name: Populate missing Security Onion Elastic Agent artifacts without auth
+  ansible.builtin.get_url:
+    url: "{{ seconion_package_base_url }}/{{ seconion_artifacts[item.item].url_name }}"
+    dest: "{{ seconion_artifact_dir }}/{{ seconion_artifacts[item.item].filename }}"
+    mode: "0755"
+    timeout: "{{ seconion_artifact_timeout }}"
+    validate_certs: "{{ seconion_artifact_validate_certs }}"
+  loop: "{{ seconion_artifact_stats.results }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when:
+    - not seconion_artifact_auth_env_stat.stat.exists
+    - not item.stat.exists
+
+- name: Validate local Security Onion Elastic Agent artifacts
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ role_path }}/files/fetch_so_artifact.py"
+      - --dest
+      - "{{ seconion_artifact_dir }}/{{ seconion_artifacts[item].filename }}"
+      - --min-size
+      - "{{ seconion_artifact_min_size | default(1000000) }}"
+      - --validate-only
+  loop: "{{ seconion_selected_artifact_keys }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: false
+
+- name: Record Security Onion artifact paths
+  ansible.builtin.set_fact:
+    seconion_artifact_paths: "{{ seconion_artifact_paths | default({}) | combine({item: seconion_artifact_dir ~ '/' ~ seconion_artifacts[item].filename}) }}"
+  loop: "{{ seconion_selected_artifact_keys }}"

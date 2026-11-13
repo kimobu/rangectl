@@ -1,0 +1,10 @@
+---
+- import_playbook: data.yml
+  vars:
+    data_path: "{{ rangectl_ad_data_path | default(rangectl_range_base ~ '/ad/' ~ domain_name ~ '/data') }}"
+  tags: 'data'
+
+- name: Configure cross-domain MECM clients
+  hosts: sccm_client
+  roles:
+    - { role: 'sccm/cross_domain_client', tags: 'sccm_cross_domain_client' }

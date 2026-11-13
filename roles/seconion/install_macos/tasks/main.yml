@@ -1,0 +1,129 @@
+- name: Add securityonion to /etc/hosts
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ seconion_ip | default('10.60.0.20') | regex_escape }}\\s+.*(securityonion|\\sso)(\\s|$).*"
+    line: "{{ seconion_hosts_line | default('10.60.0.20    securityonion so') }}"
+    state: present
+
+- name: Repair Elastic Agent command symlinks
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    agent_link="/Library/Elastic/Agent/elastic-agent"
+    bin_link="/usr/local/bin/elastic-agent"
+    if [ -L "$agent_link" ] && [ ! -e "$agent_link" ]; then
+      latest="$(
+        find /Library/Elastic/Agent/data -maxdepth 1 -type d -name 'elastic-agent-*' 2>/dev/null \
+          | sort -V \
+          | tail -n 1
+      )"
+      if [ -n "$latest" ] && [ -x "$latest/elastic-agent.app/Contents/MacOS/elastic-agent" ]; then
+        ln -sfn "$latest/elastic-agent.app/Contents/MacOS/elastic-agent" "$agent_link"
+        echo repaired
+      fi
+    fi
+    if [ -e "$agent_link" ] && { [ ! -L "$bin_link" ] || [ "$(readlink "$bin_link")" != "$agent_link" ]; }; then
+      mkdir -p "$(dirname "$bin_link")"
+      rm -f "$bin_link"
+      ln -s "$agent_link" "$bin_link"
+      echo repaired
+    fi
+  args:
+    executable: /bin/sh
+  register: seconion_macos_symlink_repair
+  changed_when: "'repaired' in seconion_macos_symlink_repair.stdout"
+
+- name: Check Fleet connectivity from macOS host
+  ansible.builtin.shell: |
+    nc -vz -G 5 {{ seconion_macos_fleet_host | default('securityonion') }} {{ seconion_macos_fleet_port | default(8220) }}
+  register: seconion_macos_fleet_check
+  changed_when: false
+  failed_when: false
+
+- name: Check for existing elastic-agent install
+  become: true
+  ansible.builtin.stat:
+    path: /Library/Elastic/Agent/elastic-agent
+  register: elastic_agent_stat
+
+- name: Select macOS Elastic Agent architecture
+  ansible.builtin.set_fact:
+    seconion_macos_agent_arch_key: >-
+      {{
+        {
+          'x86_64': 'darwin_amd64',
+          'amd64': 'darwin_amd64',
+          'darwin_amd64': 'darwin_amd64',
+          'arm64': 'darwin_arm64',
+          'aarch64': 'darwin_arm64',
+          'arms64': 'darwin_arm64',
+          'darwin_arm64': 'darwin_arm64'
+        }.get((seconion_macos_agent_arch | default(ansible_architecture | default('x86_64')) | lower), 'darwin_amd64')
+      }}
+
+- name: Populate macOS Security Onion agent artifact on controller
+  vars:
+    seconion_artifact_keys:
+      - "{{ seconion_macos_agent_arch_key }}"
+  ansible.builtin.include_role:
+    name: seconion/artifacts
+    public: true
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_macos_fleet_check.rc == 0
+
+- name: Copy macOS elastic-agent installer locally
+  become: true
+  ansible.builtin.copy:
+    src: "{{ seconion_macos_agent_installer | default(seconion_artifact_paths[seconion_macos_agent_arch_key]) }}"
+    dest: "/tmp/{{ seconion_artifacts[seconion_macos_agent_arch_key].filename }}"
+    mode: '0755'
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_macos_fleet_check.rc == 0
+
+- name: Install elastic-agent on macOS
+  become: true
+  ansible.builtin.command:
+    argv:
+      - "/tmp/{{ seconion_artifacts[seconion_macos_agent_arch_key].filename }}"
+      - -force
+      - -fleet
+      - "{{ seconion_macos_installer_fleet_url | default('https://' ~ (seconion_macos_installer_fleet_host | default('so')) ~ ':' ~ ((seconion_macos_fleet_port | default(8220)) | string)) }}"
+      - -timeout
+      - "{{ seconion_macos_installer_timeout | default('10m') }}"
+  args:
+    creates: /Library/Elastic/Agent/elastic-agent
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_macos_fleet_check.rc == 0
+  register: seconion_macos_agent_install
+  failed_when: seconion_macos_agent_install.rc != 0
+
+- name: Remove old Elastic Agent macOS note marker
+  become: true
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl/profiles/10-elastic-agent-note.txt
+    state: absent
+
+- name: Ensure rangectl support directory exists
+  become: true
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl/profiles
+    state: directory
+    mode: '0755'
+
+- name: Stage Elastic Agent macOS note
+  become: true
+  ansible.builtin.copy:
+    dest: /Library/Application Support/rangectl/profiles/10-elastic-agent-note.txt
+    mode: '0644'
+    content: |
+      Elastic Agent status: {% if elastic_agent_stat.stat.exists %}already installed{% elif seconion_macos_fleet_check.rc == 0 %}installer executed{% else %}not installed because Fleet was unreachable from this macOS host{% endif %}.
+
+      Fleet endpoint: {{ seconion_macos_fleet_host | default('securityonion') }}:{{ seconion_macos_fleet_port | default(8220) }}
+
+      If the assigned Fleet policy enables Elastic Defend, current macOS releases may still require additional system extension, network content filter, and Full Disk Access approvals before the endpoint components become fully active.
+
+      rangectl installs the agent binary automatically and stages Mail/Exchange onboarding separately. Any remaining Elastic Defend approvals should be handled with an MDM profile or equivalent manual approval flow.

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rangectl.dev/schemas/range.schema.json",
+  "title": "rangectl range definition",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "providers", "spaces", "hosts"],
+  "properties": {
+    "apiVersion": { "const": "rangectl.dev/v1alpha1" },
+    "kind": { "const": "Range" },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "providers": { "type": "object" },
+    "spaces": { "type": "object" },
+    "hosts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "hostname", "owner", "type"],
+        "properties": {
+          "name": { "type": "string" },
+          "hostname": { "type": "string" },
+          "owner": {
+            "type": "string",
+            "enum": ["tofu:proxmox", "tofu:aws", "tofu:azure", "tart", "external"]
+          },
+          "type": {
+            "type": "string",
+            "enum": ["vm", "lxc", "router", "macos_tart", "external", "cloud_vm"]
+          },
+          "os": { "type": "string" },
+          "template": { "type": "string" },
+          "space": { "type": "string" },
+          "ip": { "type": "string", "format": "ipv4" },
+          "resources": { "type": "object" },
+          "networks": { "type": "array" },
+          "ansible": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "phases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "playbooks"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "description": { "type": "string" },
+          "manual": { "type": "boolean" },
+          "playbooks": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "docs": { "type": "object" }
+  },
+  "additionalProperties": true
+}

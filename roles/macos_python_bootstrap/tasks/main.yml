@@ -1,0 +1,49 @@
+---
+- name: Check for Python.org macOS Python
+  ansible.builtin.raw: "test -x {{ macos_python_bootstrap_interpreter }} && {{ macos_python_bootstrap_interpreter }} --version"
+  register: macos_python_bootstrap_check
+  changed_when: false
+  failed_when: false
+
+- name: Ensure local macOS artifact directory exists
+  ansible.builtin.file:
+    path: "{{ macos_python_bootstrap_artifact_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  when: macos_python_bootstrap_check.rc != 0
+
+- name: Download Python.org macOS package to controller
+  ansible.builtin.get_url:
+    url: "{{ macos_python_bootstrap_url }}"
+    dest: "{{ macos_python_bootstrap_artifact_dir }}/{{ macos_python_bootstrap_pkg }}"
+    mode: "0644"
+  delegate_to: localhost
+  when: macos_python_bootstrap_check.rc != 0
+
+- name: Upload Python.org macOS package
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e scp
+      -P {{ ansible_port | default(22) }}
+      -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null
+      "{{ macos_python_bootstrap_artifact_dir }}/{{ macos_python_bootstrap_pkg }}"
+      "{{ ansible_user }}@{{ ansible_host | default(inventory_hostname) }}:/tmp/{{ macos_python_bootstrap_pkg }}"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  when: macos_python_bootstrap_check.rc != 0
+
+- name: Install Python.org macOS package
+  ansible.builtin.raw: >-
+    echo {{ ansible_become_password | default(ansible_password) | quote }} |
+    sudo -S installer -pkg /tmp/{{ macos_python_bootstrap_pkg }} -target /
+  register: macos_python_bootstrap_install
+  when: macos_python_bootstrap_check.rc != 0
+
+- name: Verify Python.org macOS Python
+  ansible.builtin.raw: "{{ macos_python_bootstrap_interpreter }} --version"
+  register: macos_python_bootstrap_verify
+  changed_when: macos_python_bootstrap_check.rc != 0
+

@@ -1,0 +1,4 @@
+---
+- name: Keep office/install role compatible
+  ansible.builtin.debug:
+    msg: "Office installation is handled by a content-pack playbook in this range."

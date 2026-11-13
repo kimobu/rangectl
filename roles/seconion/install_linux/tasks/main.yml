@@ -1,0 +1,76 @@
+---
+- name: Add Security Onion host record
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ seconion_ip | default('10.60.0.20') | regex_escape }}\\s+.*(securityonion|\\sso)(\\s|$).*"
+    line: "{{ seconion_hosts_line | default(seconion_host_line | default('10.60.0.20    securityonion so')) }}"
+    state: present
+
+- name: Persist Security Onion host record in cloud-init hosts template
+  become: true
+  ansible.builtin.lineinfile:
+    path: /etc/cloud/templates/hosts.debian.tmpl
+    regexp: "^{{ seconion_ip | default('10.60.0.20') | regex_escape }}\\s+.*(securityonion|\\sso)(\\s|$).*"
+    line: "{{ seconion_hosts_line | default(seconion_host_line | default('10.60.0.20    securityonion so')) }}"
+    state: present
+  when: ansible_facts['os_family'] == 'Debian'
+
+- name: Check Fleet connectivity from Linux host
+  ansible.builtin.shell: |
+    nc -vz -w 5 {{ seconion_linux_fleet_host | default('so') }} {{ seconion_linux_fleet_port | default(8220) }}
+  register: seconion_linux_fleet_check
+  changed_when: false
+  failed_when: false
+
+- name: Check for existing Elastic Agent install
+  become: true
+  ansible.builtin.stat:
+    path: /opt/Elastic/Agent/elastic-agent
+  register: elastic_agent_stat
+
+- name: Populate Linux Security Onion agent artifact on controller
+  vars:
+    seconion_artifact_keys:
+      - linux_amd64
+  ansible.builtin.include_role:
+    name: seconion/artifacts
+    public: true
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_linux_fleet_check.rc == 0
+
+- name: Copy Linux Elastic Agent installer locally
+  become: true
+  ansible.builtin.copy:
+    src: "{{ seconion_linux_agent_installer | default(seconion_artifact_paths.linux_amd64) }}"
+    dest: "/tmp/{{ seconion_artifacts.linux_amd64.filename }}"
+    mode: '0755'
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_linux_fleet_check.rc == 0
+
+- name: Install Elastic Agent on Linux
+  become: true
+  ansible.builtin.command:
+    argv:
+      - "/tmp/{{ seconion_artifacts.linux_amd64.filename }}"
+      - -force
+      - -fleet
+      - "{{ seconion_linux_installer_fleet_url | default('https://' ~ (seconion_linux_installer_fleet_host | default('so')) ~ ':' ~ ((seconion_linux_fleet_port | default(8220)) | string)) }}"
+      - -timeout
+      - "{{ seconion_linux_installer_timeout | default('10m') }}"
+  args:
+    creates: /opt/Elastic/Agent/elastic-agent
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_linux_fleet_check.rc == 0
+  register: seconion_linux_agent_install
+  failed_when: seconion_linux_agent_install.rc != 0
+
+- name: Report skipped Linux Elastic Agent install
+  ansible.builtin.debug:
+    msg: "Elastic Agent was not installed because Fleet was unreachable from this Linux host."
+  when:
+    - not elastic_agent_stat.stat.exists
+    - seconion_linux_fleet_check.rc != 0

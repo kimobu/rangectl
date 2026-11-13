@@ -1,0 +1,283 @@
+---
+- name: Stop Linux activity service when requested
+  ansible.builtin.systemd:
+    name: rangectl-activity.service
+    enabled: "{{ (activity_agent_state | default('started')) != 'absent' }}"
+    state: stopped
+    daemon_reload: true
+  failed_when: false
+  when:
+    - (activity_agent_state | default('started')) in ['stopped', 'absent']
+    - ansible_system is not defined or ansible_system != "Darwin"
+
+- name: Unload macOS activity LaunchAgent when requested
+  ansible.builtin.command:
+    cmd: "launchctl bootout system {{ activity_agent_launchd_plist_path }}"
+  failed_when: false
+  changed_when: false
+  when:
+    - (activity_agent_state | default('started')) in ['stopped', 'absent']
+    - ansible_system is defined and ansible_system == "Darwin"
+
+- name: Remove POSIX activity service files when absent
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ ['/etc/systemd/system/rangectl-activity.service', activity_agent_launchd_plist_path] + activity_agent_legacy_launchd_plists }}"
+  when: (activity_agent_state | default('started')) == 'absent'
+
+- name: Stop POSIX activity role after lifecycle-only request
+  ansible.builtin.meta: end_host
+  when: (activity_agent_state | default('started')) in ['stopped', 'absent']
+
+- name: Ensure activity agent install directory exists
+  ansible.builtin.file:
+    path: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy rangectl_lib source bundle
+  ansible.builtin.copy:
+    src: "{{ activity_agent_source_root | default(playbook_dir ~ '/../../') }}rangectl_lib"
+    dest: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/"
+    mode: preserve
+
+- name: Copy host activity config
+  ansible.builtin.copy:
+    src: "{{ activity_agent_config_dir }}/{{ activity_agent_host_name | default(inventory_hostname) }}.activity.json"
+    dest: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/activity.json"
+    mode: "0600"
+  when: activity_agent_remote_config_url is not defined or not activity_agent_remote_config_url
+
+- name: Remove local activity config in remote configuration mode
+  ansible.builtin.file:
+    path: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/activity.json"
+    state: absent
+  when:
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Verify remote activity config before replacing the running agent
+  ansible.builtin.uri:
+    url: "{{ activity_agent_remote_config_url }}"
+    headers:
+      Authorization: "Bearer {{ activity_agent_scenario_state_token }}"
+    return_content: false
+    status_code: 200
+  register: activity_agent_remote_config_health
+  retries: 3
+  delay: 2
+  until: activity_agent_remote_config_health.status == 200
+  no_log: true
+  become: false
+  when:
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Deploy POSIX activity launcher
+  ansible.builtin.template:
+    src: activity-agent.sh.j2
+    dest: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/{{ activity_agent_launcher_filename }}"
+    owner: "{{ activity_agent_user | default(ansible_user | default('root')) }}"
+    mode: "0700"
+
+- name: Ensure POSIX activity state directory exists
+  ansible.builtin.file:
+    path: "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/state"
+    state: directory
+    owner: "{{ activity_agent_user | default(ansible_user | default('root')) }}"
+    mode: "0700"
+
+- name: Install macOS UI automation Python packages
+  ansible.builtin.shell: |
+    set -eu
+    py="{{ activity_agent_python | default(ansible_python_interpreter | default('/usr/bin/python3')) }}"
+    "$py" -m pip install --user --break-system-packages \
+      pyautogui pillow pyobjc-framework-Quartz pyobjc-framework-ApplicationServices \
+      || "$py" -m pip install --user \
+        pyautogui pillow pyobjc-framework-Quartz pyobjc-framework-ApplicationServices
+  args:
+    executable: /bin/sh
+  become: false
+  register: activity_agent_macos_ui_pip
+  changed_when: "'Successfully installed' in (activity_agent_macos_ui_pip.stdout | default(''))"
+  failed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Preauthorize macOS UI automation for lab Python
+  ansible.builtin.shell: |
+    set -eu
+    user_name="{{ activity_agent_user | default(ansible_user | default('root')) }}"
+    user_home="$(/usr/bin/dscl . -read "/Users/${user_name}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+    now="$(/bin/date +%s)"
+    clients="/usr/bin/osascript
+    /usr/libexec/sshd-keygen-wrapper
+    /usr/local/bin/python3
+    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+    /Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python"
+    bundle_clients="org.python.python"
+    dbs="/Library/Application Support/com.apple.TCC/TCC.db"
+    if [ -n "$user_home" ]; then
+      dbs="$dbs
+    $user_home/Library/Application Support/com.apple.TCC/TCC.db"
+    fi
+    printf '%s\n' "$dbs" | while IFS= read -r db; do
+      [ -f "$db" ] || continue
+      printf '%s\n' "$clients" | while IFS= read -r client; do
+        [ -n "$client" ] || continue
+        for service in kTCCServiceAccessibility kTCCServicePostEvent kTCCServiceScreenCapture; do
+          /usr/bin/sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('$service', '$client', 1, 2, 3, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, $now);"
+        done
+        for target in com.apple.systemevents com.apple.systempreferences com.apple.systemsettings com.apple.mail com.apple.Safari com.google.Chrome com.microsoft.edgemac com.brave.Browser com.apple.Terminal com.googlecode.iterm2 com.microsoft.VSCode org.telegram.desktop com.tinyspeck.slackmacgap com.hnc.Discord us.zoom.xos com.microsoft.Outlook com.microsoft.Excel com.microsoft.Word com.adobe.Reader com.apple.Preview com.apple.Notes; do
+          /usr/bin/sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAppleEvents', '$client', 1, 2, 3, 1, NULL, NULL, 0, '$target', NULL, 0, $now);"
+        done
+      done
+      printf '%s\n' "$bundle_clients" | while IFS= read -r client; do
+        [ -n "$client" ] || continue
+        for service in kTCCServiceAccessibility kTCCServicePostEvent kTCCServiceScreenCapture; do
+          /usr/bin/sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('$service', '$client', 0, 2, 3, 1, NULL, NULL, 0, 'UNUSED', NULL, 0, $now);"
+        done
+        for target in com.apple.systemevents com.apple.systempreferences com.apple.systemsettings com.apple.mail com.apple.Safari com.google.Chrome com.microsoft.edgemac com.brave.Browser com.apple.Terminal com.googlecode.iterm2 com.microsoft.VSCode org.telegram.desktop com.tinyspeck.slackmacgap com.hnc.Discord us.zoom.xos com.microsoft.Outlook com.microsoft.Excel com.microsoft.Word com.adobe.Reader com.apple.Preview com.apple.Notes; do
+          /usr/bin/sqlite3 "$db" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, indirect_object_code_identity, flags, last_modified) VALUES ('kTCCServiceAppleEvents', '$client', 0, 2, 3, 1, NULL, NULL, 0, '$target', NULL, 0, $now);"
+        done
+      done
+    done
+    /usr/bin/killall tccd >/dev/null 2>&1 || true
+  args:
+    executable: /bin/sh
+  become: true
+  changed_when: false
+  failed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Deploy macOS LaunchAgent
+  ansible.builtin.template:
+    src: dev.rangectl.activity.plist.j2
+    dest: "{{ activity_agent_launchd_plist_path }}"
+    mode: "0644"
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Unload existing macOS activity LaunchAgent
+  ansible.builtin.command:
+    cmd: "launchctl bootout gui/{{ ansible_user_uid | default(501) }} {{ activity_agent_launchd_plist_path }}"
+  become: false
+  changed_when: false
+  failed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Unload legacy macOS activity LaunchAgents
+  ansible.builtin.command:
+    cmd: "launchctl bootout gui/{{ ansible_user_uid | default(501) }} {{ item }}"
+  loop: "{{ activity_agent_legacy_launchd_plists }}"
+  become: false
+  changed_when: false
+  failed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Stop stale macOS activity agent processes before reload
+  ansible.builtin.shell: |
+    pgrep -f "[r]angectl_lib.activity.agent" \
+      | while read -r pid; do
+          kill -9 "$pid" || true
+        done
+    exit 0
+  args:
+    executable: /bin/sh
+  become: false
+  changed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Load macOS activity LaunchAgent
+  ansible.builtin.command:
+    cmd: "launchctl bootstrap gui/{{ ansible_user_uid | default(501) }} {{ activity_agent_launchd_plist_path }}"
+  become: false
+  register: activity_agent_macos_launchctl
+  changed_when: activity_agent_macos_launchctl.rc == 0
+  failed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Start macOS activity agent immediately if launchd did not
+  ansible.builtin.shell: |
+    if pgrep -f "[r]angectl_lib.activity.agent" >/dev/null 2>&1; then
+      exit 0
+    fi
+    nohup "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/{{ activity_agent_launcher_filename }}" >{{ activity_agent_stdout_path | quote }} 2>{{ activity_agent_stderr_path | quote }} &
+  args:
+    executable: /bin/sh
+  become: false
+  changed_when: true
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Verify macOS activity agent is running after reload
+  ansible.builtin.command:
+    cmd: pgrep -f rangectl_lib.activity.agent
+  become: false
+  register: activity_agent_macos_process
+  retries: 5
+  delay: 2
+  until: activity_agent_macos_process.rc == 0
+  changed_when: false
+  when: ansible_system is defined and ansible_system == "Darwin"
+
+- name: Wait for legacy activity logs to migrate to the server
+  ansible.builtin.stat:
+    path: "{{ item }}/state/activity.jsonl"
+  loop: "{{ [activity_agent_install_dir | default('/opt/rangectl-activity')] + activity_agent_legacy_install_dirs }}"
+  register: activity_agent_legacy_log
+  retries: 120
+  delay: 1
+  until: not activity_agent_legacy_log.stat.exists
+  when:
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Wait for legacy scenario state to migrate to the server
+  ansible.builtin.stat:
+    path: "{{ item }}/state/scenarios"
+  loop: "{{ [activity_agent_install_dir | default('/opt/rangectl-activity')] + activity_agent_legacy_install_dirs }}"
+  register: activity_agent_legacy_scenarios
+  retries: 10
+  delay: 1
+  until: not activity_agent_legacy_scenarios.stat.exists
+  when:
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Remove endpoint-side activity disclosure files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/activity.json"
+    - "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/state/activity.jsonl"
+    - "{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/state/scenarios"
+    - "{{ activity_agent_stdout_path }}"
+    - "{{ activity_agent_stderr_path }}"
+  when:
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Remove legacy macOS activity installations after successful migration
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ activity_agent_legacy_install_dirs + activity_agent_legacy_launchd_plists }}"
+  when:
+    - ansible_system is defined and ansible_system == "Darwin"
+    - activity_agent_remote_config_url is defined
+    - activity_agent_remote_config_url | length > 0
+
+- name: Deploy Linux systemd service
+  ansible.builtin.template:
+    src: rangectl-activity.service.j2
+    dest: /etc/systemd/system/rangectl-activity.service
+    mode: "0644"
+  when: ansible_system is not defined or ansible_system != "Darwin"
+
+- name: Enable Linux activity service
+  ansible.builtin.systemd:
+    name: rangectl-activity.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: ansible_system is not defined or ansible_system != "Darwin"

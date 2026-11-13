@@ -1,0 +1,8 @@
+[Unit]
+Description=Send scheduled rangectl lab mail {{ item.id }}
+After=postfix.service dovecot.service
+Wants=postfix.service dovecot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rangectl-send-mail /etc/rangectl-mail/messages/{{ item.id }}.json

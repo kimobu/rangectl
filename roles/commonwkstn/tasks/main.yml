@@ -1,0 +1,187 @@
+# DNSCHANGE
+- name: Resolve workstation domain membership from lab data
+  ansible.builtin.set_fact:
+    member_domain_resolved: "{{ lab.hosts.get(dict_key, {}).get('domain', member_domain) if (lab is defined and dict_key is defined) else member_domain }}"
+
+- name: Resolve workstation domain credentials
+  ansible.builtin.set_fact:
+    domain_username_resolved: "{{ (admin_user ~ '@' ~ member_domain_resolved) if admin_user is defined else domain_username }}"
+    domain_password_resolved: "{{ (lab.domains.get(member_domain_resolved, {}).get('domain_password') if lab is defined else None) or domain_password }}"
+    domain_netbios_resolved: "{{ lab.domains.get(member_domain_resolved, {}).get('netbios_name', member_domain_resolved.split('.')[0] | upper) if lab is defined else (member_domain_resolved.split('.')[0] | upper) }}"
+
+- name: "prioritize the {{domain_adapter}} interface (local) as the default for routing"
+  ansible.windows.win_shell:
+    Set-NetIPInterface -InterfaceAlias "{{domain_adapter}}" -InterfaceMetric 10
+  when: two_adapters
+
+- name: "Set configure dns to {{dns_domain}}"
+  win_dns_client:
+    adapter_names: "{{domain_adapter}}"
+    ipv4_addresses:
+    - "{{hostvars[dns_domain].ansible_host}}"
+    log_path: C:\dns_log.txt
+
+- name: Clear DNS client cache before domain discovery
+  ansible.windows.win_shell: Clear-DnsClientCache
+  changed_when: false
+
+- name: Configure workstation DNS suffix for domain discovery
+  ansible.windows.win_shell: |
+    Set-DnsClient `
+      -InterfaceAlias "{{ domain_adapter }}" `
+      -ConnectionSpecificSuffix "{{ member_domain_resolved }}" `
+      -UseSuffixWhenRegistering $true
+    Clear-DnsClientCache
+
+- name: "Wait for {{ member_domain_resolved }} Kerberos on {{ dns_domain }}"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[dns_domain].ansible_host }}"
+    port: 88
+    timeout: 30
+  delegate_to: localhost
+
+- name: "Wait for {{ member_domain_resolved }} LDAP on {{ dns_domain }}"
+  ansible.builtin.wait_for:
+    host: "{{ hostvars[dns_domain].ansible_host }}"
+    port: 389
+    timeout: 30
+  delegate_to: localhost
+
+- name: "Start Windows Time before domain join"
+  ansible.windows.win_shell: |
+    Set-Service W32Time -StartupType Automatic
+    Start-Service W32Time -ErrorAction SilentlyContinue
+    w32tm /config /manualpeerlist:{{ hostvars[dns_domain].ansible_host }} /syncfromflags:manual /update | Out-Null
+    w32tm /resync /force | Out-Null
+  register: workstation_time_sync
+  changed_when: false
+  failed_when: false
+
+- name: Check current workstation domain membership
+  ansible.windows.win_shell: |
+    $computerSystem = Get-CimInstance Win32_ComputerSystem
+    [pscustomobject]@{
+      PartOfDomain = [bool]$computerSystem.PartOfDomain
+      Domain = [string]$computerSystem.Domain
+    } | ConvertTo-Json -Compress
+  register: workstation_domain_membership
+  changed_when: false
+
+- name: Remove stale AD computer account before joining replacement workstation
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $computerName = '{{ hostname | default(inventory_hostname) }}'
+    try {
+      $computer = Get-ADComputer -Identity $computerName -ErrorAction Stop
+    } catch [Microsoft.ActiveDirectory.Management.ADIdentityNotFoundException] {
+      $computer = $null
+    }
+    if ($null -eq $computer) {
+      Write-Output 'changed=0'
+      exit 0
+    }
+    Remove-ADComputer -Identity $computer -Confirm:$false
+    Write-Output 'changed=1'
+  delegate_to: "{{ dns_domain }}"
+  register: stale_computer_cleanup
+  changed_when: "'changed=1' in stale_computer_cleanup.stdout"
+  when: >
+    not (workstation_domain_membership.stdout | from_json).PartOfDomain
+
+- name: "Add workstation to {{ member_domain_resolved }}"
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $memberDomain = '{{ member_domain_resolved }}'
+    $netbiosDomain = '{{ domain_netbios_resolved }}'
+    $domainController = '{{ hostvars[dns_domain].hostname | default(dns_domain) }}.{{ member_domain_resolved }}'
+    $domainControllerShort = '{{ hostvars[dns_domain].hostname | default(dns_domain) }}'
+    $domainControllerIp = '{{ hostvars[dns_domain].ansible_host }}'
+    $desiredHostname = '{{ hostname | default(inventory_hostname) }}'
+    $computerSystem = Get-CimInstance Win32_ComputerSystem
+
+    if ($computerSystem.PartOfDomain -and (
+        $computerSystem.Domain -ieq $memberDomain -or
+        $computerSystem.Domain -ieq $netbiosDomain
+      ) -and $env:COMPUTERNAME -ieq $desiredHostname) {
+      Write-Output 'changed=0 reboot=0'
+      exit 0
+    }
+
+    $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    $hostsText = Get-Content $hostsPath -Raw -ErrorAction SilentlyContinue
+    if ($hostsText -notmatch [regex]::Escape($domainController)) {
+      Add-Content -Path $hostsPath -Value "$domainControllerIp $domainControllerShort $domainController"
+      Clear-DnsClientCache
+    }
+
+    $password = ConvertTo-SecureString '{{ domain_password_resolved }}' -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential("{{ domain_username_resolved }}", $password)
+    $addComputerParams = @{
+      DomainName = $memberDomain
+      Server = $domainController
+      Credential = $credential
+      ErrorAction = 'Stop'
+    }
+    if ($env:COMPUTERNAME -ine $desiredHostname) {
+      $addComputerParams.NewName = $desiredHostname
+    }
+    try {
+      Add-Computer @addComputerParams
+    } catch {
+      Write-Output "primary Add-Computer failed: $($_.Exception.Message)"
+      $legacyCredential = New-Object System.Management.Automation.PSCredential("$netbiosDomain\{{ admin_user }}", $password)
+      $fallbackParams = @{
+        DomainName = $memberDomain
+        Server = $domainController
+        Credential = $legacyCredential
+        ErrorAction = 'Stop'
+      }
+      if ($env:COMPUTERNAME -ine $desiredHostname) {
+        $fallbackParams.NewName = $desiredHostname
+      }
+      Add-Computer @fallbackParams
+    }
+    Write-Output 'changed=1 reboot=1'
+  register: domain_state
+  changed_when: "'changed=1' in domain_state.stdout"
+
+- name: Reboot if needed
+  win_reboot:    
+    reboot_timeout: 1500
+    post_reboot_delay: 100
+  when: "'reboot=1' in (domain_state.stdout | default(''))"
+
+- name: Wait for workstation domain secure channel
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    $password = ConvertTo-SecureString '{{ domain_password_resolved }}' -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential("{{ domain_netbios_resolved }}\{{ admin_user }}", $password)
+    $deadline = (Get-Date).AddMinutes(5)
+    do {
+      if (Test-ComputerSecureChannel -ErrorAction SilentlyContinue) {
+        Write-Output 'secure_channel=1 repaired=0'
+        exit 0
+      }
+      try {
+        Reset-ComputerMachinePassword `
+          -Server "{{ hostvars[dns_domain].hostname | default(dns_domain) }}.{{ member_domain_resolved }}" `
+          -Credential $credential `
+          -ErrorAction Stop
+        Restart-Service Netlogon -Force
+        Start-Sleep -Seconds 10
+        if (Test-ComputerSecureChannel -ErrorAction SilentlyContinue) {
+          Write-Output 'secure_channel=1 repaired=1'
+          exit 0
+        }
+      } catch {
+        Write-Output "machine password reset pending: $($_.Exception.Message)"
+      }
+      Start-Sleep -Seconds 10
+    } while ((Get-Date) -lt $deadline)
+    throw 'Timed out waiting for workstation domain secure channel'
+  register: workstation_secure_channel
+  changed_when: "'repaired=1' in workstation_secure_channel.stdout"
+  when: >
+    (domain_state.stdout | default('')) is search('reboot=1') or
+    (domain_state.stdout | default('')) is search('changed=1') or
+    (workstation_domain_membership.stdout | from_json).PartOfDomain

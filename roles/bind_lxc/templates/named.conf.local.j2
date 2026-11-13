@@ -1,0 +1,21 @@
+// Local zones managed by rangectl.
+{% for zone in bind_extra_zones | default([]) %}
+zone "{{ zone.name }}" {
+    type master;
+    file "/etc/bind/db.{{ zone.name }}";
+};
+
+{% endfor %}
+
+{% for zone in bind_forward_zones | default([]) %}
+zone "{{ zone.name }}" {
+    type forward;
+    forward only;
+    forwarders {
+{% for fwd in zone.forwarders | default([]) %}
+        {{ fwd.ip }} port {{ fwd.port | default(53) }};
+{% endfor %}
+    };
+};
+
+{% endfor %}

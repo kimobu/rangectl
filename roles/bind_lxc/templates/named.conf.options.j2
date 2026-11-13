@@ -1,0 +1,15 @@
+options {
+	directory "/var/cache/bind";
+
+	dnssec-validation auto;
+
+	recursion yes;
+
+	allow-recursion   { {% for cidr in bind_allow_recursion_cidrs %}{{ cidr }}; {% endfor %}localhost; };
+	allow-query-cache { {% for cidr in bind_allow_recursion_cidrs %}{{ cidr }}; {% endfor %}localhost; };
+	allow-query       { any; };
+
+	listen-on port 53 { any; };
+	listen-on-v6      { any; };
+};
+

@@ -1,0 +1,51 @@
+---
+- name: Ensure traffic control tools are installed
+  ansible.builtin.apt:
+    name: iproute2
+    state: present
+    update_cache: true
+
+- name: Install Security Onion span script
+  ansible.builtin.template:
+    src: pve-so-span.j2
+    dest: /usr/local/sbin/pve-so-span
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Security Onion span defaults
+  ansible.builtin.template:
+    src: pve-so-span.default.j2
+    dest: /etc/default/pve-so-span
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install Security Onion span service
+  ansible.builtin.template:
+    src: pve-so-span.service.j2
+    dest: /etc/systemd/system/pve-so-span.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Install Security Onion span timer
+  ansible.builtin.template:
+    src: pve-so-span.timer.j2
+    dest: /etc/systemd/system/pve-so-span.timer
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable Security Onion span timer
+  ansible.builtin.systemd:
+    name: pve-so-span.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply Security Onion span immediately
+  ansible.builtin.command: /usr/local/sbin/pve-so-span
+  changed_when: false

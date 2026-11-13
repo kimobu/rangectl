@@ -1,0 +1,29 @@
+---
+- name: Register Proxmox bootstrap host
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add Proxmox host from environment
+      ansible.builtin.add_host:
+        name: "{{ lookup('env', 'PROXMOX_NODE') | default('pve2', true) }}"
+        groups: proxmox_windows_bootstrap
+        ansible_host: >-
+          {{
+            lookup('env', 'RANGECTL_PROXMOX_SSH_HOST')
+            | default(lookup('env', 'PROXMOX_SSH_HOST'), true)
+            | default(lookup('env', 'PROXMOX_NODE') | default('pve2', true), true)
+          }}
+        ansible_connection: ssh
+        ansible_port: "{{ lookup('env', 'RANGECTL_PROXMOX_SSH_PORT') | default(lookup('env', 'PROXMOX_SSH_PORT'), true) | default('22', true) }}"
+        ansible_shell_type: sh
+        ansible_user: "{{ lookup('env', 'RANGECTL_PROXMOX_SSH_USER') | default(lookup('env', 'PROXMOX_SSH_USER'), true) | default('root', true) }}"
+        ansible_password: "{{ lookup('env', 'RANGECTL_PROXMOX_SSH_PASSWORD') | default(lookup('env', 'PROXMOX_SSH_PASSWORD'), true) | default(lookup('env', 'PROXMOX_PASSWORD'), true) }}"
+        ansible_ssh_private_key_file: "{{ lookup('env', 'RANGECTL_PROXMOX_SSH_KEY') | default(lookup('env', 'PROXMOX_SSH_KEY'), true) | default(omit, true) }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+- name: Bootstrap Windows guest network settings
+  hosts: proxmox_windows_bootstrap
+  gather_facts: false
+  become: true
+  roles:
+    - proxmox_windows_bootstrap

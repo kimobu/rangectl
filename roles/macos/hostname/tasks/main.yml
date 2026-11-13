@@ -1,0 +1,51 @@
+---
+- name: Read current ComputerName
+  ansible.builtin.command:
+    argv: [/usr/sbin/scutil, --get, ComputerName]
+  register: macos_hostname_computer_name
+  changed_when: false
+  failed_when: false
+
+- name: Read current HostName
+  ansible.builtin.command:
+    argv: [/usr/sbin/scutil, --get, HostName]
+  register: macos_hostname_host_name
+  changed_when: false
+  failed_when: false
+
+- name: Read current LocalHostName
+  ansible.builtin.command:
+    argv: [/usr/sbin/scutil, --get, LocalHostName]
+  register: macos_hostname_local_host_name
+  changed_when: false
+  failed_when: false
+
+- name: Set ComputerName
+  become: true
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - ComputerName
+      - "{{ macos_hostname_value }}"
+  when: macos_hostname_computer_name.stdout != macos_hostname_value
+
+- name: Set HostName
+  become: true
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - HostName
+      - "{{ macos_hostname_value }}"
+  when: macos_hostname_host_name.stdout != macos_hostname_value
+
+- name: Set LocalHostName
+  become: true
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/scutil
+      - --set
+      - LocalHostName
+      - "{{ macos_local_hostname_value }}"
+  when: macos_hostname_local_host_name.stdout is not match('^' ~ (macos_local_hostname_value | regex_escape) ~ '(-[0-9]+)?$')

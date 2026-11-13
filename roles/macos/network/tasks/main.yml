@@ -1,0 +1,45 @@
+---
+- name: List macOS network services
+  ansible.builtin.command:
+    argv: [/usr/sbin/networksetup, -listallnetworkservices]
+  register: macos_network_services
+  changed_when: false
+
+- name: Read macOS DNS servers
+  ansible.builtin.command:
+    argv: [/usr/sbin/networksetup, -getdnsservers, "{{ macos_network_service }}"]
+  register: macos_network_dns_current
+  changed_when: false
+  failed_when: false
+  when: macos_network_service in macos_network_services.stdout_lines
+
+- name: Read macOS search domains
+  ansible.builtin.command:
+    argv: [/usr/sbin/networksetup, -getsearchdomains, "{{ macos_network_service }}"]
+  register: macos_network_search_current
+  changed_when: false
+  failed_when: false
+  when: macos_network_service in macos_network_services.stdout_lines
+
+- name: Set macOS DNS servers
+  become: true
+  ansible.builtin.command:
+    argv: "{{ ['/usr/sbin/networksetup', '-setdnsservers', macos_network_service] + macos_dns_servers }}"
+  when:
+    - macos_network_service in macos_network_services.stdout_lines
+    - macos_network_dns_current.stdout_lines != macos_dns_servers
+
+- name: Set macOS search domains
+  become: true
+  ansible.builtin.command:
+    argv: >-
+      {{
+        ['/usr/sbin/networksetup', '-setsearchdomains', macos_network_service]
+        + (macos_search_domains if (macos_search_domains | length > 0) else ['Empty'])
+      }}
+  when:
+    - macos_network_service in macos_network_services.stdout_lines
+    - >-
+      (macos_search_domains | length > 0 and macos_network_search_current.stdout_lines != macos_search_domains)
+      or
+      (macos_search_domains | length == 0 and "There aren't any Search Domains set" not in macos_network_search_current.stdout)

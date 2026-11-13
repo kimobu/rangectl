@@ -1,0 +1,43 @@
+---
+- name: Install elastic-agent on macOS
+  hosts: macos_managed
+  gather_facts: false
+  pre_tasks:
+    - name: Check optional macOS SSH readiness
+      ansible.builtin.shell: >-
+        timeout 75s
+        {{ 'sshpass -e' if (ansible_password | default('')) else '' }}
+        ssh -o BatchMode=no -o ConnectTimeout=20 -o ConnectionAttempts=3
+        -o KexAlgorithms=ecdh-sha2-nistp256
+        -o ServerAliveInterval=5 -o ServerAliveCountMax=1
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+        {{ ansible_user }}@{{ ansible_host }} echo ready
+      environment:
+        SSHPASS: "{{ ansible_password | default('') }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      register: macos_ssh_ready
+
+    - name: Check macOS SSH port before skipping host
+      ansible.builtin.shell: >-
+        nc -vz -w 5 {{ ansible_host }} {{ ansible_port | default(22) }}
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      register: macos_ssh_port_ready
+      when: macos_ssh_ready.rc != 0
+
+    - name: Skip optional macOS host when SSH is not ready
+      ansible.builtin.meta: end_host
+      when:
+        - macos_ssh_ready.rc != 0
+        - (macos_ssh_port_ready.rc | default(1)) != 0
+
+    - name: Bootstrap Python for Ansible modules
+      ansible.builtin.import_role:
+        name: macos_python_bootstrap
+  roles:
+    - { role: "seconion/install_macos", tags: "install_macos" }

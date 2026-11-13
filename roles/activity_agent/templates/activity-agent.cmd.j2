@@ -1,0 +1,2 @@
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{{ activity_agent_install_dir | default('C:\ProgramData\rangectl-activity') }}\activity-agent.ps1"

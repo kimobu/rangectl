@@ -1,0 +1,131 @@
+- name: "Reboot and wait for the AD system to restart"
+  win_reboot:
+    test_command: "Get-ADUser -Identity Administrator -Properties *"
+    post_reboot_delay: 100
+  when: groups_domains_reboot_before_membership | default(false) | bool
+
+- name: "Wait for Active Directory Web Services"
+  ansible.windows.win_service_info:
+    name: ADWS
+  register: groups_domains_adws
+  until:
+    - groups_domains_adws.exists
+    - groups_domains_adws.services | length > 0
+    - groups_domains_adws.services[0].state == 'started'
+  retries: 20
+  delay: 15
+
+- name: "Wait for local Active Directory PowerShell"
+  ansible.windows.win_shell: |
+    Get-ADDomain -Server "{{ domain_server }}" | Out-Null
+  register: groups_domains_ad_ready
+  until: groups_domains_ad_ready is not failed
+  retries: 20
+  delay: 15
+
+- name: "synchronizes all domains"
+  win_shell: repadmin /syncall /Ade
+  become: yes
+  become_method: runas
+  become_user: "{{domain_username}}"
+  vars:
+    ansible_become_pass: "{{domain_password}}"
+
+- name: "Add cross-domain members to domain group : {{ domain_server }}"
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = 'Stop'
+    Import-Module ActiveDirectory
+
+    $targetDomain = '{{ domain }}'.ToLowerInvariant()
+    $targetServer = '{{ domain_server }}'
+    $targetPassword = ConvertTo-SecureString '{{ domain_password }}' -AsPlainText -Force
+    $targetCredential = New-Object System.Management.Automation.PSCredential('{{ domain_username }}', $targetPassword)
+    $targetDn = (Get-ADDomain -Server $targetServer -Credential $targetCredential).DistinguishedName
+    $groupName = '{{ item.key }}'
+    $members = ConvertFrom-Json @'
+    {{ item.value | to_json }}
+    '@
+
+    $domains = @{}
+    {% for domain_name, domain_config in lab.domains.items() %}
+    $domains['{{ domain_name | lower }}'] = @{
+      Server = '{{ lab.hosts[domain_config.dc].hostname | default(domain_config.dc) }}.{{ domain_name }}'
+      Username = '{{ domain_name }}\{{ admin_user }}'
+      Password = '{{ domain_config.domain_password }}'
+    }
+    {% endfor %}
+
+    $changed = 0
+    $group = Get-ADGroup -Identity $groupName -Properties member -Server $targetServer -Credential $targetCredential
+    $currentMembers = @($group.member)
+
+    foreach ($member in @($members)) {
+      if ($member -match '^(?<domain>[^\\]+)\\(?<name>.+)$') {
+        $memberDomain = $Matches.domain.ToLowerInvariant()
+        $memberName = $Matches.name
+      } else {
+        $memberDomain = $targetDomain
+        $memberName = $member
+      }
+
+      if (-not $domains.ContainsKey($memberDomain)) {
+        throw "No domain configuration found for $memberDomain while adding $member to $groupName"
+      }
+
+      $domainInfo = $domains[$memberDomain]
+      $memberPassword = ConvertTo-SecureString $domainInfo.Password -AsPlainText -Force
+      $memberCredential = New-Object System.Management.Automation.PSCredential($domainInfo.Username, $memberPassword)
+      $ldapName = $memberName.Replace('\', '\\').Replace('(', '\28').Replace(')', '\29')
+      $principal = Get-ADObject `
+        -LDAPFilter "(sAMAccountName=$ldapName)" `
+        -Properties objectSid,sAMAccountName `
+        -Server $domainInfo.Server `
+        -Credential $memberCredential
+
+      if (-not $principal) {
+        throw "Unable to resolve $member on $($domainInfo.Server)"
+      }
+
+      if ($memberDomain -eq $targetDomain) {
+        $expectedMember = $principal.DistinguishedName
+      } else {
+        $expectedMember = "CN=$($principal.objectSid.Value),CN=ForeignSecurityPrincipals,$targetDn"
+      }
+
+      if ($currentMembers -contains $expectedMember) {
+        continue
+      }
+
+      try {
+        Add-ADGroupMember `
+          -Identity $groupName `
+          -Members $principal `
+          -Server $targetServer `
+          -Credential $targetCredential
+        $changed = 1
+        $currentMembers += $expectedMember
+      } catch {
+        if ($memberDomain -ne $targetDomain) {
+          $netOutput = & net.exe localgroup $groupName $member /domain /add 2>&1
+          if ($LASTEXITCODE -eq 0) {
+            $changed = 1
+            continue
+          }
+          $netText = ($netOutput | Out-String)
+          if ($netText -match 'already a member|is already a member') {
+            continue
+          }
+          throw "Unable to add foreign member $member to $groupName with Add-ADGroupMember ($($_.Exception.Message)) or net localgroup ($netText)"
+        }
+        throw
+      }
+    }
+
+    Write-Output "changed=$changed"
+  with_dict: "{{ domain_groups_members }}"
+  register: group_membership
+  until: "group_membership is not failed"
+  retries: 10
+  delay: 60
+  changed_when: "'changed=1' in (group_membership.stdout | default(''))"
+  no_log: true

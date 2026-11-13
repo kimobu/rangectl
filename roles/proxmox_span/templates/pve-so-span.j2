@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SO_VMID="${SO_VMID:-202}"
+SO_MONITOR_NET="${SO_MONITOR_NET:-1}"
+BLUE_VLANS="${BLUE_VLANS:-50 51 52}"
+GREY_VLANS="${GREY_VLANS:-60}"
+PFSENSE_VMIDS="${PFSENSE_VMIDS:-121}"
+TC_FILTER_PREF="${TC_FILTER_PREF:-49152}"
+
+TARGET="tap${SO_VMID}i${SO_MONITOR_NET}"
+
+command -v tc >/dev/null 2>&1 || exit 0
+ip link show "$TARGET" >/dev/null 2>&1 || exit 0
+
+validate_target_bridge() {
+  local master_path master member_path member
+
+  master_path="$(readlink -f "/sys/class/net/$TARGET/master" 2>/dev/null || true)"
+  [[ -n "$master_path" ]] || {
+    printf 'Security Onion monitor tap %s has no bridge master\n' "$TARGET" >&2
+    return 1
+  }
+  master="$(basename "$master_path")"
+
+  for member_path in "/sys/class/net/$master/brif/"*; do
+    [[ -e "$member_path" ]] || continue
+    member="$(basename "$member_path")"
+    case "$member" in
+      "$TARGET"|tap*i*|veth*i*)
+        ;;
+      *)
+        printf 'Unsafe monitor bridge %s: external member %s is attached\n' "$master" "$member" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+contains_word() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+parse_tag() {
+  local line="$1"
+  [[ "$line" =~ (^|,)tag=([0-9]+)(,|$) ]] && printf '%s\n' "${BASH_REMATCH[2]}"
+}
+
+parse_net_index() {
+  local line="$1"
+  [[ "$line" =~ ^net([0-9]+): ]] && printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+is_pfsense_vm() {
+  local vmid="$1"
+  contains_word "$vmid" "${PFSENSE_LIST[@]}" && return 0
+  qm config "$vmid" 2>/dev/null | grep -qi '^name: pfsense$'
+}
+
+mirror_dev() {
+  local dev="$1"
+  local direction="$2"
+  [[ "$dev" == "$TARGET" ]] && return 0
+  ip link show "$dev" >/dev/null 2>&1 || return 0
+
+  tc qdisc replace dev "$dev" clsact
+  clear_dev "$dev"
+  # Virtual NIC offload leaves checksums unfinished at this hook. Repair them
+  # before copying packets so Zeek accepts the mirrored stream.
+  tc filter add dev "$dev" "$direction" protocol all pref "$TC_FILTER_PREF" matchall \
+    action csum ip and icmp and igmp and tcp and udp and udplite and sctp pipe \
+    action mirred egress mirror dev "$TARGET"
+  printf '%s %s\n' "$dev" "$direction"
+}
+
+clear_dev() {
+  local dev="$1"
+  [[ "$dev" == "$TARGET" ]] && return 0
+  ip link show "$dev" >/dev/null 2>&1 || return 0
+
+  tc filter delete dev "$dev" ingress pref "$TC_FILTER_PREF" protocol all >/dev/null 2>&1 || true
+  tc filter delete dev "$dev" egress pref "$TC_FILTER_PREF" protocol all >/dev/null 2>&1 || true
+}
+
+discover_qemu() {
+  local vmid="$1"
+  local line idx tag dev
+  [[ "$vmid" == "$SO_VMID" ]] && return 0
+  qm status "$vmid" 2>/dev/null | grep -q 'status: running' || return 0
+
+  while IFS= read -r line; do
+    idx="$(parse_net_index "$line" || true)"
+    tag="$(parse_tag "$line" || true)"
+    [[ -n "$idx" && -n "$tag" ]] || continue
+    dev="tap${vmid}i${idx}"
+
+    if contains_word "$tag" "${BLUE_VLAN_LIST[@]}" || contains_word "$tag" "${GREY_VLAN_LIST[@]}"; then
+      # Guest transmissions appear on tap ingress. Mirroring destination
+      # egress as well would duplicate every east-west packet. This applies
+      # to pfSense too, so routed replies are captured without a second copy
+      # of traffic that originated on another monitored interface.
+      mirror_dev "$dev" ingress
+    fi
+  done < <(qm config "$vmid" 2>/dev/null | awk '/^net[0-9]+:/')
+}
+
+discover_lxc() {
+  local vmid="$1"
+  local line idx tag dev
+  [[ "$vmid" == "$SO_VMID" ]] && return 0
+  pct status "$vmid" 2>/dev/null | grep -q 'status: running' || return 0
+
+  while IFS= read -r line; do
+    idx="$(parse_net_index "$line" || true)"
+    tag="$(parse_tag "$line" || true)"
+    [[ -n "$idx" && -n "$tag" ]] || continue
+    dev="veth${vmid}i${idx}"
+
+    if contains_word "$tag" "${BLUE_VLAN_LIST[@]}" || contains_word "$tag" "${GREY_VLAN_LIST[@]}"; then
+      mirror_dev "$dev" ingress
+    fi
+  done < <(pct config "$vmid" 2>/dev/null | awk '/^net[0-9]+:/')
+}
+
+read -r -a BLUE_VLAN_LIST <<<"$BLUE_VLANS"
+read -r -a GREY_VLAN_LIST <<<"$GREY_VLANS"
+read -r -a PFSENSE_LIST <<<"$PFSENSE_VMIDS"
+
+validate_target_bridge
+ip link set "$TARGET" up || true
+
+for devpath in /sys/class/net/tap*i* /sys/class/net/veth*i*; do
+  [[ -e "$devpath" ]] || continue
+  clear_dev "$(basename "$devpath")"
+done
+
+for vmid in $(qm list 2>/dev/null | awk 'NR > 1 {print $1}'); do
+  discover_qemu "$vmid"
+done
+
+for vmid in $(pct list 2>/dev/null | awk 'NR > 1 {print $1}'); do
+  discover_lxc "$vmid"
+done

@@ -1,0 +1,32 @@
+- name: Install sliver dependencies
+  apt:
+    name:
+      - curl
+      - git
+      - mingw-w64
+    state: present
+    update_cache: true
+
+- name: Install sliver server
+  shell: |
+    set -o pipefail
+    curl https://sliver.sh/install | bash
+  args:
+    creates: /root/sliver-server
+    executable: /bin/bash
+
+- name: Deploy sliver systemd unit
+  template:
+    src: sliver.service.j2
+    dest: /etc/systemd/system/sliver.service
+    mode: '0644'
+
+- name: Reload systemd for sliver unit
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start sliver service
+  systemd:
+    name: sliver.service
+    enabled: true
+    state: started

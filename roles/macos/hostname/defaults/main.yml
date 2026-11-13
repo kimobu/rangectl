@@ -1,0 +1,3 @@
+---
+macos_hostname_value: "{{ hostname | default(inventory_hostname) }}"
+macos_local_hostname_value: "{{ macos_hostname_value | regex_replace('[^A-Za-z0-9-]', '-') | regex_replace('^-+|-+$', '') }}"

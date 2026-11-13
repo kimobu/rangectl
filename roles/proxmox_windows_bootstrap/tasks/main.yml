@@ -1,0 +1,52 @@
+---
+- name: Load range definition
+  ansible.builtin.set_fact:
+    proxmox_windows_bootstrap_range: "{{ lookup('file', proxmox_windows_bootstrap_range_file) | from_yaml }}"
+
+- name: Build range space list
+  ansible.builtin.set_fact:
+    proxmox_windows_bootstrap_spaces: >-
+      {{
+        (proxmox_windows_bootstrap_range.spaces.blue | default([]))
+        + (proxmox_windows_bootstrap_range.spaces.grey | default([]))
+        + (proxmox_windows_bootstrap_range.spaces.red | default([]))
+      }}
+
+- name: Index range spaces
+  ansible.builtin.set_fact:
+    proxmox_windows_bootstrap_space_by_name: "{{ proxmox_windows_bootstrap_space_by_name | default({}) | combine({item.name: item}) }}"
+  loop: "{{ proxmox_windows_bootstrap_spaces }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Select Windows Proxmox VMs
+  ansible.builtin.set_fact:
+    proxmox_windows_bootstrap_vms: >-
+      {{
+        proxmox_windows_bootstrap_range.hosts
+        | selectattr('owner', 'equalto', 'tofu:proxmox')
+        | selectattr('type', 'equalto', 'vm')
+        | selectattr('os', 'defined')
+        | selectattr('os', 'match', '^windows')
+        | list
+      }}
+
+- name: Filter Windows bootstrap targets
+  ansible.builtin.set_fact:
+    proxmox_windows_bootstrap_vms: >-
+      {{
+        proxmox_windows_bootstrap_vms
+        | selectattr('name', 'in', proxmox_windows_bootstrap_only_list)
+        | list
+      }}
+  vars:
+    proxmox_windows_bootstrap_only_list: "{{ proxmox_windows_bootstrap_only | split(',') | map('trim') | reject('equalto', '') | list }}"
+  when: proxmox_windows_bootstrap_only | default('') | trim | length > 0
+
+- name: Bootstrap each Windows VM
+  ansible.builtin.include_tasks: vm.yml
+  loop: "{{ proxmox_windows_bootstrap_vms }}"
+  loop_control:
+    loop_var: bootstrap_vm
+    label: "{{ bootstrap_vm.name }}"
+  when: bootstrap_vm.proxmox.windows_bootstrap | default(true) | bool

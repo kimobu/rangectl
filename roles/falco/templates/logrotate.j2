@@ -1,0 +1,10 @@
+{{ falco_log_path }} {
+    size {{ falco_log_rotate_size }}
+    rotate {{ falco_log_rotate_count }}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 root adm
+}

@@ -1,0 +1,35 @@
+{
+  "description": "Final ECS normalization for macOS Endpoint Security Framework events",
+  "version": 1,
+  "processors": [
+    {
+      "script": {
+        "lang": "painless",
+        "source": "if (ctx.process?.executable instanceof Map) { def raw = ctx.process.executable; def path = raw.path; if (ctx.esf == null) ctx.esf = new HashMap(); if (ctx.esf.process == null) ctx.esf.process = new HashMap(); ctx.esf.process.executable = raw; if (path != null) ctx.process.executable = path; else ctx.process.remove('executable'); } if (ctx.user?.id != null) ctx.user.id = ctx.user.id.toString(); if (ctx.event_type != null) { if (ctx.esf == null) ctx.esf = new HashMap(); ctx.esf.event_type = ctx.event_type.toString(); ctx.remove('event_type'); } if (ctx.version != null) { if (ctx.esf == null) ctx.esf = new HashMap(); ctx.esf.version = ctx.version.toString(); ctx.remove('version'); }"
+      }
+    },
+    {
+      "date": {
+        "field": "file.mtime",
+        "target_field": "file.mtime",
+        "formats": ["ISO8601"],
+        "ignore_failure": true
+      }
+    },
+    {
+      "date": {
+        "field": "file.atime",
+        "target_field": "file.atime",
+        "formats": ["ISO8601"],
+        "ignore_failure": true
+      }
+    },
+    {"set": {"field": "event.dataset", "value": "apple.esf"}},
+    {"set": {"field": "event.module", "value": "esf"}},
+    {"remove": {"field": "event_type_name", "ignore_missing": true}}
+  ],
+  "on_failure": [
+    {"set": {"field": "event.kind", "value": "pipeline_error"}},
+    {"set": {"field": "error.message", "value": "ESF normalization failure in {{{ _ingest.on_failure_processor_type }}}: {{{ _ingest.on_failure_message }}}"}}
+  ]
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Timer for scheduled rangectl lab mail {{ item.id }}
+
+[Timer]
+OnBootSec={{ item.after_seconds | default(60) }}s
+AccuracySec={{ item.accuracy_seconds | default(30) }}s
+Persistent=false
+Unit=rangectl-mail-{{ item.id }}.service
+
+[Install]
+WantedBy=timers.target

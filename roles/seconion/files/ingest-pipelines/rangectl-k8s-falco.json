@@ -1,0 +1,41 @@
+{
+  "description": "Normalize Falco JSON from Kubernetes nodes to ECS",
+  "version": 2,
+  "processors": [
+    {"date": {"field": "time", "target_field": "@timestamp", "formats": ["ISO8601"], "ignore_failure": true}},
+    {"dot_expander": {"field": "*", "path": "output_fields", "ignore_failure": true}},
+    {"rename": {"field": "output_fields.proc.name", "target_field": "process.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.cmdline", "target_field": "process.command_line", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.exepath", "target_field": "process.executable", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.pid", "target_field": "process.pid", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.ppid", "target_field": "process.parent.pid", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.pname", "target_field": "process.parent.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.proc.cwd", "target_field": "process.working_directory", "ignore_missing": true, "override": false}},
+    {"script": {"lang": "painless", "source": "if (ctx.output_fields?.proc?.tty != null) { if (ctx.process == null) ctx.process = new HashMap(); ctx.process.interactive = ctx.output_fields.proc.tty != 0; ctx.output_fields.proc.remove('tty'); }"}},
+    {"rename": {"field": "output_fields.user.name", "target_field": "user.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.user.uid", "target_field": "user.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.group.gid", "target_field": "group.id", "ignore_missing": true, "override": false}},
+    {"convert": {"field": "user.id", "type": "string", "ignore_missing": true}},
+    {"convert": {"field": "group.id", "type": "string", "ignore_missing": true}},
+    {"rename": {"field": "output_fields.container.id", "target_field": "container.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.container.name", "target_field": "container.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.container.image.repository", "target_field": "container.image.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.container.image.tag", "target_field": "container.image.tag", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.k8s.ns.name", "target_field": "orchestrator.namespace", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.k8s.pod.name", "target_field": "orchestrator.resource.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.k8s.pod.uid", "target_field": "orchestrator.resource.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.evt.type", "target_field": "event.action", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "output_fields.fd.l4proto", "target_field": "network.transport", "ignore_missing": true, "override": false}},
+    {"grok": {"field": "output_fields.fd.name", "patterns": ["%{IP:source.ip}:%{POSINT:source.port:int}->%{IP:destination.ip}:%{POSINT:destination.port:int}"], "ignore_missing": true, "ignore_failure": true}},
+    {"script": {"lang": "painless", "source": "def cats = new ArrayList(); def types = new ArrayList(); if (ctx.source != null && ctx.destination != null) { cats.add('network'); types.add('connection'); } else if (ctx.process != null) { cats.add('process'); types.add('info'); } else { cats.add('intrusion_detection'); types.add('info'); } ctx.event.category = cats; ctx.event.type = types; if (ctx.tags != null) { def ids = new ArrayList(); for (def tag : ctx.tags) { if (tag instanceof String && /^T[0-9]{4}(\\.[0-9]{3})?$/.matcher(tag).matches()) { ids.add(tag); } } if (!ids.isEmpty()) { if (ctx.threat == null) ctx.threat = new HashMap(); if (ctx.threat.technique == null) ctx.threat.technique = new HashMap(); ctx.threat.technique.id = ids; } }"}},
+    {"set": {"field": "event.kind", "value": "alert"}},
+    {"set": {"field": "event.module", "value": "falco"}},
+    {"set": {"field": "event.dataset", "value": "falco.log"}},
+    {"set": {"field": "orchestrator.type", "value": "kubernetes"}},
+    {"remove": {"field": "output_fields", "ignore_missing": true}}
+  ],
+  "on_failure": [
+    {"set": {"field": "event.kind", "value": "pipeline_error"}},
+    {"set": {"field": "error.message", "value": "Falco pipeline failure in {{{ _ingest.on_failure_processor_type }}}: {{{ _ingest.on_failure_message }}}"}}
+  ]
+}

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{ macos_eslogger_rotate_label }}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ macos_eslogger_rotate_script }}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>{{ macos_eslogger_rotate_interval_seconds }}</integer>
+  <key>StandardOutPath</key>
+  <string>{{ macos_eslogger_error_log_path }}</string>
+  <key>StandardErrorPath</key>
+  <string>{{ macos_eslogger_error_log_path }}</string>
+  <key>WorkingDirectory</key>
+  <string>/var/log</string>
+</dict>
+</plist>

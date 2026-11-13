@@ -1,0 +1,21 @@
+---
+mail_app_imap_enabled: true
+mail_app_imap_profile_dir: /Library/Application Support/rangectl/profiles
+mail_app_imap_account_name: "{{ mail_app_imap_display_name | default(ansible_user | default(inventory_hostname)) }}"
+mail_app_imap_display_name: "{{ inventory_hostname }}"
+mail_app_imap_email: ""
+mail_app_imap_username: "{{ mail_app_imap_email }}"
+mail_app_imap_password: ""
+mail_app_imap_use_profile: false
+mail_app_imap_incoming_host: mail.local
+mail_app_imap_setup_host: "{{ mail_app_imap_incoming_host }}"
+mail_app_imap_incoming_port: 993
+mail_app_imap_incoming_ssl: true
+mail_app_imap_outgoing_host: mail.local
+mail_app_imap_outgoing_port: 465
+mail_app_imap_outgoing_ssl: true
+mail_app_imap_identifier: "local.rangectl.mail.{{ inventory_hostname }}"
+mail_app_imap_profile_display_name: "Lab Mail"
+mail_app_imap_profile_description: "Configures the lab IMAP mailbox."
+mail_app_imap_profile_organization: "rangectl"
+mail_app_imap_launch_mail: true

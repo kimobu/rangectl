@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from base64 import b64decode
+from email.message import EmailMessage
+from pathlib import Path
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: rangectl-send-mail MESSAGE.json", file=sys.stderr)
+        return 2
+    message_path = Path(sys.argv[1])
+    data = json.loads(message_path.read_text(encoding="utf-8"))
+
+    message = EmailMessage()
+    message["From"] = data["from"]
+    message["To"] = data["to"]
+    message["Subject"] = data["subject"]
+    if data.get("date"):
+        message["Date"] = data["date"]
+
+    text_body = data.get("body") or "Please review the attached material."
+    html_body = data.get("html")
+    message.set_content(text_body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
+
+    for attachment in data.get("attachments") or []:
+        filename = attachment.get("filename") or "attachment.bin"
+        content_type = attachment.get("content_type") or "application/octet-stream"
+        maintype, _, subtype = content_type.partition("/")
+        if not subtype:
+            maintype, subtype = "application", "octet-stream"
+        if attachment.get("base64"):
+            payload = b64decode(attachment.get("content") or "")
+            message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
+        elif maintype == "text":
+            message.add_attachment(
+                attachment.get("content") or "",
+                subtype=subtype,
+                filename=filename,
+            )
+        else:
+            payload = (attachment.get("content") or "").encode("utf-8")
+            message.add_attachment(payload, maintype=maintype, subtype=subtype, filename=filename)
+
+    completed = subprocess.run(
+        ["/usr/sbin/sendmail", "-t", "-oi"],
+        input=message.as_bytes(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        sys.stderr.buffer.write(completed.stderr)
+    return completed.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

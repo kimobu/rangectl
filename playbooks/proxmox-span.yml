@@ -1,0 +1,7 @@
+---
+- name: Configure Proxmox Security Onion span
+  hosts: "{{ proxmox_span_target | default('proxmox_span') }}"
+  gather_facts: false
+  become: true
+  roles:
+    - proxmox_span

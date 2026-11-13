@@ -1,0 +1,23 @@
+- name: Install redirector packages
+  apt:
+    name: "{{ redirector_packages }}"
+    state: present
+    update_cache: true
+
+- name: Deploy socat redirector units
+  template:
+    src: socat-redirect.service.j2
+    dest: "/etc/systemd/system/{{ item.name }}.service"
+    mode: '0644'
+  loop: "{{ redirector_redirects }}"
+
+- name: Reload systemd for socat units
+  systemd:
+    daemon_reload: true
+
+- name: Enable and start socat redirectors
+  systemd:
+    name: "{{ item.name }}.service"
+    enabled: true
+    state: started
+  loop: "{{ redirector_redirects }}"

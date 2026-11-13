@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "nameserver {{ postfix_dns_server }}" > /tmp/resolv.conf
+cat /etc/resolv.conf >> /tmp/resolv.conf
+cp /tmp/resolv.conf /etc/resolv.conf
+cp /tmp/resolv.conf /var/spool/postfix/etc/resolv.conf

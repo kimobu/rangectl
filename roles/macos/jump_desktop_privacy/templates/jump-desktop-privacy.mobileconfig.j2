@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadDescription</key>
+      <string>Privacy preferences for Jump Desktop Connect remote administration.</string>
+      <key>PayloadDisplayName</key>
+      <string>Jump Desktop Connect Privacy Preferences</string>
+      <key>PayloadIdentifier</key>
+      <string>{{ jump_desktop_privacy_identifier }}.pppc</string>
+      <key>PayloadOrganization</key>
+      <string>{{ jump_desktop_privacy_organization }}</string>
+      <key>PayloadType</key>
+      <string>com.apple.TCC.configuration-profile-policy</string>
+      <key>PayloadUUID</key>
+      <string>{{ (jump_desktop_privacy_identifier ~ '.pppc') | to_uuid }}</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Services</key>
+      <dict>
+        <key>Accessibility</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>{{ jump_desktop_privacy_bundle_id }}</string>
+            <key>IdentifierType</key>
+            <string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>{{ jump_desktop_privacy_code_requirement }}</string>
+            <key>Allowed</key>
+            <true/>
+            <key>Comment</key>
+            <string>Allow Jump Desktop Connect to control the Mac via Accessibility APIs.</string>
+          </dict>
+        </array>
+        <key>PostEvent</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>{{ jump_desktop_privacy_bundle_id }}</string>
+            <key>IdentifierType</key>
+            <string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>{{ jump_desktop_privacy_code_requirement }}</string>
+            <key>Allowed</key>
+            <true/>
+            <key>Comment</key>
+            <string>Allow Jump Desktop Connect to send keyboard and mouse events.</string>
+          </dict>
+        </array>
+        <key>ListenEvent</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>{{ jump_desktop_privacy_bundle_id }}</string>
+            <key>IdentifierType</key>
+            <string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>{{ jump_desktop_privacy_code_requirement }}</string>
+            <key>Authorization</key>
+            <string>AllowStandardUserToSetSystemService</string>
+            <key>Comment</key>
+            <string>Permit standard users to approve input monitoring for Jump Desktop Connect if macOS prompts for it.</string>
+          </dict>
+        </array>
+        <key>ScreenCapture</key>
+        <array>
+          <dict>
+            <key>Identifier</key>
+            <string>{{ jump_desktop_privacy_bundle_id }}</string>
+            <key>IdentifierType</key>
+            <string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>{{ jump_desktop_privacy_code_requirement }}</string>
+            <key>Authorization</key>
+            <string>AllowStandardUserToSetSystemService</string>
+            <key>Comment</key>
+            <string>Permit standard users to approve Screen Recording for Jump Desktop Connect.</string>
+          </dict>
+        </array>
+      </dict>
+    </dict>
+  </array>
+  <key>PayloadDescription</key>
+  <string>Configures available macOS privacy preferences for Jump Desktop Connect.</string>
+  <key>PayloadDisplayName</key>
+  <string>{{ jump_desktop_privacy_profile_name }}</string>
+  <key>PayloadIdentifier</key>
+  <string>{{ jump_desktop_privacy_identifier }}</string>
+  <key>PayloadOrganization</key>
+  <string>{{ jump_desktop_privacy_organization }}</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>{{ jump_desktop_privacy_identifier | to_uuid }}</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

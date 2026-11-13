@@ -1,0 +1,11 @@
+[Unit]
+Description=Set the DNS servers to local bind instance
+
+[Service]
+WorkingDirectory=/root
+Type=forking
+ExecStart=/bin/bash /root/fix_dns.sh
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

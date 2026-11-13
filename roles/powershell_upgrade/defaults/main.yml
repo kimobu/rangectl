@@ -1,0 +1,4 @@
+wmf5_installer_src: "{{ playbook_dir }}/files/Win8.1AndW2K12R2-KB3191564-x64.msu"
+wmf5_installer_dest: "{{ ansible_env.TEMP }}\\wmf5.msu"
+wmf5_download_url: "https://www.microsoft.com/en-us/download/details.aspx?id=54616"
+nuget_provider_src: "{{ playbook_dir }}/files/Microsoft.PackageManagement.NuGetProvider-2.8.5.208.dll"

@@ -1,0 +1,122 @@
+---
+- name: Populate Security Onion agent artifacts on controller
+  vars:
+    seconion_artifact_keys:
+      - darwin_amd64
+      - linux_amd64
+      - windows_amd64
+      - windows_amd64_msi
+  ansible.builtin.include_role:
+    name: seconion/artifacts
+    public: true
+
+- name: Check controller Security Onion Elastic Agent installers
+  vars:
+    seconion_upload_artifacts:
+      - src: "{{ seconion_darwin_agent_installer | default(seconion_artifact_paths.darwin_amd64) }}"
+        name: so-elastic-agent_darwin_amd64
+      - src: "{{ seconion_linux_agent_installer | default(seconion_artifact_paths.linux_amd64) }}"
+        name: so-elastic-agent_linux_amd64
+      - src: "{{ seconion_windows_agent_installer | default(seconion_artifact_paths.windows_amd64) }}"
+        name: so-elastic-agent_windows_amd64.exe
+      - src: "{{ seconion_windows_msi_agent_installer | default(seconion_artifact_paths.windows_amd64_msi) }}"
+        name: so-elastic-agent_windows_amd64.msi
+  ansible.builtin.stat:
+    path: "{{ item.src }}"
+  delegate_to: localhost
+  register: seconion_upload_controller_stats
+  loop: "{{ seconion_upload_artifacts }}"
+  when:
+    - lab is defined
+    - inventory_hostname in groups.get('dc', [])
+
+- name: Check Security Onion Elastic Agent installers in SYSVOL
+  vars:
+    domain: "{{ lab.hosts[dict_key].domain }}"
+    dc: "{{ lab.domains[domain].dc }}"
+    dc_hostname: "{{ lab.hosts[dc].hostname }}"
+    seconion_upload_artifacts:
+      - src: "{{ seconion_darwin_agent_installer | default(seconion_artifact_paths.darwin_amd64) }}"
+        name: so-elastic-agent_darwin_amd64
+      - src: "{{ seconion_linux_agent_installer | default(seconion_artifact_paths.linux_amd64) }}"
+        name: so-elastic-agent_linux_amd64
+      - src: "{{ seconion_windows_agent_installer | default(seconion_artifact_paths.windows_amd64) }}"
+        name: so-elastic-agent_windows_amd64.exe
+      - src: "{{ seconion_windows_msi_agent_installer | default(seconion_artifact_paths.windows_amd64_msi) }}"
+        name: so-elastic-agent_windows_amd64.msi
+  ansible.windows.win_stat:
+    path: "\\\\{{ dc_hostname }}\\sysvol\\{{ domain }}\\scripts\\{{ item.name }}"
+  register: seconion_upload_sysvol_stats
+  loop: "{{ seconion_upload_artifacts }}"
+  when:
+    - lab is defined
+    - inventory_hostname in groups.get('dc', [])
+
+- name: Upload Security Onion Elastic Agent installers
+  vars:
+    domain: "{{ lab.hosts[dict_key].domain }}"
+    domain_password: "{{ lab.domains[domain].domain_password }}"
+    dc: "{{ lab.domains[domain].dc }}"
+    dc_hostname: "{{ lab.hosts[dc].hostname }}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{ domain }}\\Administrator"
+    ansible_become_password: "{{ domain_password }}"
+    seconion_upload_artifacts:
+      - src: "{{ seconion_darwin_agent_installer | default(seconion_artifact_paths.darwin_amd64) }}"
+        name: so-elastic-agent_darwin_amd64
+      - src: "{{ seconion_linux_agent_installer | default(seconion_artifact_paths.linux_amd64) }}"
+        name: so-elastic-agent_linux_amd64
+      - src: "{{ seconion_windows_agent_installer | default(seconion_artifact_paths.windows_amd64) }}"
+        name: so-elastic-agent_windows_amd64.exe
+      - src: "{{ seconion_windows_msi_agent_installer | default(seconion_artifact_paths.windows_amd64_msi) }}"
+        name: so-elastic-agent_windows_amd64.msi
+  ansible.windows.win_copy:
+    src: "{{ item.src }}"
+    dest: "\\\\{{ dc_hostname }}\\sysvol\\{{ domain }}\\scripts\\{{ item.name }}"
+  loop: "{{ seconion_upload_artifacts }}"
+  loop_control:
+    index_var: seconion_upload_index
+  when:
+    - lab is defined
+    - inventory_hostname in groups.get('dc', [])
+    - >
+      not (seconion_upload_sysvol_stats.results[seconion_upload_index].stat.exists | default(false)) or
+      ((seconion_upload_sysvol_stats.results[seconion_upload_index].stat.size | default(-1) | int) !=
+       (seconion_upload_controller_stats.results[seconion_upload_index].stat.size | default(-2) | int))
+
+- name: Check local lab file share directory
+  vars:
+    seconion_windows_agent_package_key: "{{ 'windows_amd64_msi' if (seconion_windows_agent_package | default('exe') | lower) == 'msi' else 'windows_amd64' }}"
+  ansible.windows.win_stat:
+    path: "{{ seconion_windows_agent_share_local_path | regex_replace('\\\\[^\\\\]+$', '') }}"
+  register: seconion_windows_agent_share_local_dir
+  when: seconion_windows_agent_share_local_path | default('') | length > 0
+
+- name: Stage Windows Elastic Agent installer to lab file share
+  vars:
+    seconion_windows_agent_package_key: "{{ 'windows_amd64_msi' if (seconion_windows_agent_package | default('exe') | lower) == 'msi' else 'windows_amd64' }}"
+  ansible.windows.win_copy:
+    src: "{{ seconion_windows_agent_installer | default(seconion_artifact_paths[seconion_windows_agent_package_key]) }}"
+    dest: "{{ seconion_windows_agent_share_local_path }}"
+  when:
+    - seconion_windows_agent_share_local_path | default('') | length > 0
+    - seconion_windows_agent_share_local_dir.stat.exists | default(false)
+
+- name: Stage Windows Elastic Agent installer to lab UNC share
+  vars:
+    seconion_windows_agent_package_key: "{{ 'windows_amd64_msi' if (seconion_windows_agent_package | default('exe') | lower) == 'msi' else 'windows_amd64' }}"
+    domain: "{{ lab.hosts[dict_key].domain }}"
+    domain_password: "{{ lab.domains[domain].domain_password }}"
+    netbios: "{{ lab.domains[domain].netbios_name }}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{ netbios }}\\Administrator"
+    ansible_become_password: "{{ domain_password }}"
+  ansible.windows.win_copy:
+    src: "{{ seconion_windows_agent_installer | default(seconion_artifact_paths[seconion_windows_agent_package_key]) }}"
+    dest: "{{ seconion_windows_agent_share_path }}"
+  when:
+    - lab is defined
+    - seconion_windows_agent_share_path | default('') | length > 0
+    - seconion_windows_agent_share_local_path | default('') | length == 0

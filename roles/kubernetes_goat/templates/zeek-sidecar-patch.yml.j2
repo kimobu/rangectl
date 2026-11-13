@@ -1,0 +1,38 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: zeek-sidecar
+          image: {{ kubernetes_goat_zeek_image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - /bin/sh
+            - -c
+            - >-
+              mkdir -p /zeek/logs/$POD_NAME &&
+              exec zeek -i eth0
+              Log::default_logdir=/zeek/logs/$POD_NAME
+              LogAscii::use_json=T
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN, NET_RAW]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 200Mi
+            limits:
+              cpu: 200m
+              memory: 500Mi
+          volumeMounts:
+            - name: zeek-logs
+              mountPath: /zeek/logs
+      volumes:
+        - name: zeek-logs
+          hostPath:
+            path: {{ kubernetes_goat_zeek_log_dir }}
+            type: Directory

@@ -1,0 +1,52 @@
+- name: Ensure common startup directory exists
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    netbios: "{{lab.domains[domain].netbios_name}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{netbios}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  ansible.windows.win_file:
+    path: "{{ humansim_startup_dir }}"
+    state: directory
+
+- name: Ensure humansim machine directory exists
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    netbios: "{{lab.domains[domain].netbios_name}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{netbios}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  ansible.windows.win_file:
+    path: "{{ humansim_machine_dir | default('C:\\ProgramData\\humansim') }}"
+    state: directory
+
+- name: Deploy humansim PowerShell entrypoint
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    netbios: "{{lab.domains[domain].netbios_name}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{netbios}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  ansible.windows.win_template:
+    src: human.ps1.j2
+    dest: "{{ humansim_machine_dir | default('C:\\ProgramData\\humansim') }}\\human.ps1"
+
+- name: Deploy Startup launcher (CMD)
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    netbios: "{{lab.domains[domain].netbios_name}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{netbios}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+    humansim_cmd_target: "{{ humansim_machine_dir | default('C:\\ProgramData\\humansim') }}\\human.ps1"
+  ansible.windows.win_template:
+    src: human.cmd.j2
+    dest: "{{ humansim_startup_dir }}\\human.cmd"

@@ -1,0 +1,6 @@
+---
+lab_tls_trust_cert_dir: "/Library/Application Support/rangectl/certs"
+lab_tls_trust_ca_local_path: ""
+lab_tls_trust_ca_dest_filename: lab-root-ca.crt
+lab_tls_trust_ca_common_name: "Lab Root CA"
+lab_tls_trust_stale_cert_paths: []

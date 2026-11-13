@@ -1,0 +1,9 @@
+{{ kubernetes_goat_zeek_log_dir }}/*/*.log {
+    size {{ kubernetes_goat_zeek_log_rotate_size }}
+    rotate {{ kubernetes_goat_zeek_log_rotate_count }}
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

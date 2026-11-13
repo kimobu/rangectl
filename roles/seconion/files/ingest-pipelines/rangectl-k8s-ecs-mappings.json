@@ -1,0 +1,68 @@
+{
+  "template": {
+    "mappings": {
+      "properties": {
+        "container": {
+          "properties": {
+            "id": {"type": "keyword"},
+            "name": {"type": "keyword"},
+            "image": {"properties": {"name": {"type": "keyword"}, "tag": {"type": "keyword"}}}
+          }
+        },
+        "destination": {
+          "properties": {
+            "ip": {"type": "ip"}, "port": {"type": "long"},
+            "bytes": {"type": "long"}, "packets": {"type": "long"}
+          }
+        },
+        "event": {
+          "properties": {
+            "action": {"type": "keyword"}, "category": {"type": "keyword"},
+            "dataset": {"type": "keyword"}, "id": {"type": "keyword"},
+            "kind": {"type": "keyword"}, "module": {"type": "keyword"},
+            "outcome": {"type": "keyword"}, "reason": {"type": "keyword"},
+            "type": {"type": "keyword"}
+          }
+        },
+        "group": {"properties": {"id": {"type": "keyword"}}},
+        "network": {
+          "properties": {
+            "bytes": {"type": "long"}, "packets": {"type": "long"},
+            "protocol": {"type": "keyword"}, "transport": {"type": "keyword"}
+          }
+        },
+        "observer": {
+          "properties": {
+            "name": {"type": "keyword"}, "product": {"type": "keyword"},
+            "type": {"type": "keyword"}
+          }
+        },
+        "orchestrator": {
+          "properties": {
+            "namespace": {"type": "keyword"}, "type": {"type": "keyword"},
+            "resource": {"properties": {"id": {"type": "keyword"}, "name": {"type": "keyword"}, "type": {"type": "keyword"}}}
+          }
+        },
+        "process": {
+          "properties": {
+            "name": {"type": "keyword"}, "command_line": {"type": "wildcard"},
+            "executable": {"type": "keyword"}, "pid": {"type": "long"},
+            "working_directory": {"type": "keyword"}, "interactive": {"type": "boolean"},
+            "parent": {"properties": {"name": {"type": "keyword"}, "pid": {"type": "long"}}}
+          }
+        },
+        "related": {"properties": {"ip": {"type": "ip"}, "user": {"type": "keyword"}}},
+        "rule": {"properties": {"name": {"type": "keyword"}}},
+        "source": {
+          "properties": {
+            "ip": {"type": "ip"}, "port": {"type": "long"},
+            "bytes": {"type": "long"}, "packets": {"type": "long"}
+          }
+        },
+        "threat": {"properties": {"technique": {"properties": {"id": {"type": "keyword"}}}}},
+        "url": {"properties": {"original": {"type": "wildcard"}}},
+        "user": {"properties": {"id": {"type": "keyword"}, "name": {"type": "keyword"}}}
+      }
+    }
+  }
+}

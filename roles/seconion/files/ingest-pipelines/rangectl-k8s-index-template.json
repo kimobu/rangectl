@@ -1,0 +1,19 @@
+{
+  "index_patterns": [
+    "logs-falco.log-*",
+    "logs-zeek.log-*",
+    "logs-kubernetes.audit-*"
+  ],
+  "priority": 226,
+  "composed_of": [
+    "so-data-streams-mappings",
+    "so-fleet_integrations.ip_mappings-1",
+    "so-fleet_globals-1",
+    "so-fleet_agent_id_verification-1",
+    "so-logs-mappings",
+    "so-logs-settings",
+    "rangectl-k8s-ecs-mappings"
+  ],
+  "data_stream": {},
+  "allow_auto_create": true
+}

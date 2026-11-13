@@ -1,0 +1,99 @@
+#!/bin/sh
+set -eu
+
+export RANGECTL_MAIL_EMAIL={{ mail_app_imap_username | quote }}
+export RANGECTL_MAIL_DISPLAY_NAME={{ mail_app_imap_display_name | quote }}
+export RANGECTL_MAIL_ACCOUNT_NAME={{ mail_app_imap_profile_display_name | quote }}
+export RANGECTL_MAIL_INCOMING_HOST={{ mail_app_imap_incoming_host | quote }}
+export RANGECTL_MAIL_INCOMING_PORT={{ mail_app_imap_incoming_port | quote }}
+export RANGECTL_MAIL_INCOMING_SSL={{ ('true' if mail_app_imap_incoming_ssl | bool else 'false') | quote }}
+export RANGECTL_MAIL_OUTGOING_HOST={{ mail_app_imap_outgoing_host | quote }}
+export RANGECTL_MAIL_OUTGOING_PORT={{ mail_app_imap_outgoing_port | quote }}
+export RANGECTL_MAIL_OUTGOING_SSL={{ ('true' if mail_app_imap_outgoing_ssl | bool else 'false') | quote }}
+
+/usr/bin/osascript <<'OSA'
+set emailAddress to system attribute "RANGECTL_MAIL_EMAIL"
+set displayName to system attribute "RANGECTL_MAIL_DISPLAY_NAME"
+set accountName to system attribute "RANGECTL_MAIL_ACCOUNT_NAME"
+set accountPassword to system attribute "RANGECTL_MAIL_PASSWORD"
+set incomingHost to system attribute "RANGECTL_MAIL_INCOMING_HOST"
+set incomingPort to (system attribute "RANGECTL_MAIL_INCOMING_PORT") as integer
+set incomingSSL to (system attribute "RANGECTL_MAIL_INCOMING_SSL") is "true"
+set outgoingHost to system attribute "RANGECTL_MAIL_OUTGOING_HOST"
+set outgoingPort to (system attribute "RANGECTL_MAIL_OUTGOING_PORT") as integer
+set outgoingSSL to (system attribute "RANGECTL_MAIL_OUTGOING_SSL") is "true"
+
+tell application "Mail"
+  set targetAccount to missing value
+  repeat with accountRef in every imap account
+    try
+      if emailAddress is in (email addresses of accountRef) then set targetAccount to accountRef
+    end try
+  end repeat
+  if targetAccount is missing value then error "Mail IMAP account for " & emailAddress & " was not found"
+
+  set settingsChanged to false
+  if name of targetAccount is not accountName then
+    set name of targetAccount to accountName
+    set settingsChanged to true
+  end if
+  if full name of targetAccount is not displayName then
+    set full name of targetAccount to displayName
+    set settingsChanged to true
+  end if
+  if user name of targetAccount is not emailAddress then
+    set user name of targetAccount to emailAddress
+    set settingsChanged to true
+  end if
+  if server name of targetAccount is not incomingHost then
+    set server name of targetAccount to incomingHost
+    set settingsChanged to true
+  end if
+  if port of targetAccount is not incomingPort then
+    set port of targetAccount to incomingPort
+    set settingsChanged to true
+  end if
+  if uses ssl of targetAccount is not incomingSSL then
+    set uses ssl of targetAccount to incomingSSL
+    set settingsChanged to true
+  end if
+  set password of targetAccount to accountPassword
+  try
+    set enabled of targetAccount to true
+  end try
+  try
+    set include when getting new mail of targetAccount to true
+  end try
+
+  set targetSMTP to smtp server of targetAccount
+  if user name of targetSMTP is not emailAddress then
+    set user name of targetSMTP to emailAddress
+    set settingsChanged to true
+  end if
+  if server name of targetSMTP is not outgoingHost then
+    set server name of targetSMTP to outgoingHost
+    set settingsChanged to true
+  end if
+  if port of targetSMTP is not outgoingPort then
+    set port of targetSMTP to outgoingPort
+    set settingsChanged to true
+  end if
+  if uses ssl of targetSMTP is not outgoingSSL then
+    set uses ssl of targetSMTP to outgoingSSL
+    set settingsChanged to true
+  end if
+  if authentication of targetSMTP is not none then
+    set authentication of targetSMTP to none
+    set settingsChanged to true
+  end if
+  try
+    set enabled of targetSMTP to true
+  end try
+
+  try
+    check for new mail for targetAccount
+  end try
+  if settingsChanged then return "configured"
+  return "unchanged"
+end tell
+OSA

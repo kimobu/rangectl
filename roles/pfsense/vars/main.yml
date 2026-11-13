@@ -1,0 +1,3 @@
+---
+# Intentionally empty. pfSense baseline values live in defaults/main.yml so
+# range playbooks can override interface and service settings.

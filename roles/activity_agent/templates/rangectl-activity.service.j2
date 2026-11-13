@@ -1,0 +1,16 @@
+[Unit]
+Description=rangectl activity agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ activity_agent_install_dir | default('/opt/rangectl-activity') }}
+ExecStart={{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/{{ activity_agent_launcher_filename }}
+Restart=always
+RestartSec=30
+User={{ activity_agent_user | default(ansible_user | default('root')) }}
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

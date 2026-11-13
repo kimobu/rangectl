@@ -1,0 +1,207 @@
+# Example Proxmox Windows template build contract.
+#
+# Copy this file into a private content pack, replace the ISO sources, then
+# point future template-build commands at that private file.
+# Credentials stay in .rangectl.env through the *_env keys below.
+
+version: 1
+provider: proxmox
+builder: packer
+
+defaults:
+  runner: proxmox-node
+  node_env: PROXMOX_NODE
+  pool_env: PROXMOX_POOL
+  vm_storage_env: PROXMOX_STORAGE
+  iso_storage: pve-truenas
+  network_bridge_env: PROXMOX_NETWORK_BRIDGE
+  template_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+  runner_vlan_interface: vmbr0v60
+  runner_vlan_ip: 10.60.0.250/24
+
+assets:
+  virtio_iso:
+    source: pve-truenas:iso/virtio-win.iso
+  cloudbase_init_msi:
+    source: https://cloudbase.it/downloads/CloudbaseInitSetup_Stable_x64.msi
+
+builds:
+  win2012r2:
+    assets:
+      virtio_iso:
+        source: pve-truenas:iso/virtio-win-0.1.208.iso
+      windows_updates:
+        source: /srv/rangectl/template-assets/windows-updates/2012r2
+    output:
+      catalog_name: win2012r2
+      vmid: 902
+      name: template-windows-server2012r2-cloudinit
+      description: Windows Server 2012 R2 Datacenter Evaluation template built by rangectl
+    os:
+      image_name: Windows Server 2012 R2 SERVERDATACENTER
+      virtio_driver_os: 2k12R2
+      proxmox_os: win10
+      iso:
+        source: pve-truenas:iso/windows_server_2012r2_x64.iso
+    hardware:
+      cpu_cores: 4
+      memory_mb: 4096
+      disk_gb: 80
+      bios: seabios
+      machine: pc
+      disk_type: sata
+      disk_format: raw
+      build_vlan: "60"
+      build_ip: 10.60.0.202
+      build_gateway: 10.60.0.1
+      build_dns: 10.60.0.1
+      install_qemu_guest_agent: false
+    unattended:
+      locale: en-US
+      timezone: UTC
+      keyboard: en-US
+      administrator_username: vagrant
+      administrator_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+    provisioning:
+      communicator: winrm
+      winrm_username: vagrant
+      winrm_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+
+  win2016:
+    output:
+      catalog_name: win2016
+      vmid: 901
+      name: template-windows-server2016-cloudinit
+      description: Windows Server 2016 Datacenter Evaluation template built by rangectl
+    os:
+      image_name: Windows Server 2016 SERVERDATACENTER
+      virtio_driver_os: 2k16
+      proxmox_os: win10
+      iso:
+        source: pve-truenas:iso/windows_server_2016_14393_eval_x64.iso
+    hardware:
+      cpu_cores: 4
+      memory_mb: 4096
+      disk_gb: 80
+      bios: ovmf
+      machine: q35
+      disk_type: sata
+      disk_format: raw
+      build_vlan: "60"
+    unattended:
+      locale: en-US
+      timezone: UTC
+      keyboard: en-US
+      administrator_username: vagrant
+      administrator_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+    provisioning:
+      communicator: winrm
+      winrm_username: vagrant
+      winrm_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+
+  win2019:
+    output:
+      catalog_name: win2019
+      vmid: 900
+      name: template-windows-server2019-cloudinit
+      description: Windows Server 2019 Datacenter Evaluation template built by rangectl
+    os:
+      image_name: Windows Server 2019 SERVERDATACENTER
+      virtio_driver_os: 2k19
+      proxmox_os: win10
+      iso:
+        source: pve-truenas:iso/windows_server2019_x64FREE_en-us.iso
+    hardware:
+      cpu_cores: 4
+      memory_mb: 4096
+      disk_gb: 80
+      bios: ovmf
+      machine: q35
+      disk_type: sata
+      disk_format: raw
+      build_vlan: "60"
+    unattended:
+      locale: en-US
+      timezone: UTC
+      keyboard: en-US
+      administrator_username: vagrant
+      administrator_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+    provisioning:
+      communicator: winrm
+      winrm_username: vagrant
+      winrm_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+
+  win10-ltsc:
+    output:
+      catalog_name: win10-ltsc
+      vmid: 904
+      name: template-windows10-ltsc-cloudinit
+      description: Windows 10 Enterprise LTSC 2021 template built by rangectl
+    os:
+      image_name: Windows 10 Enterprise LTSC 2021
+      virtio_driver_os: w10
+      proxmox_os: win10
+      iso:
+        source: pve-truenas:iso/windows_10_ltsc_2021_eval_x64.iso
+    hardware:
+      cpu_cores: 4
+      memory_mb: 4096
+      disk_gb: 80
+      bios: ovmf
+      machine: q35
+      disk_type: sata
+      disk_format: raw
+      build_vlan: "60"
+    unattended:
+      locale: en-US
+      timezone: UTC
+      keyboard: en-US
+      administrator_username: vagrant
+      administrator_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+    provisioning:
+      communicator: winrm
+      winrm_username: vagrant
+      winrm_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+
+  win11-ltsc:
+    output:
+      catalog_name: win11-ltsc
+      vmid: 906
+      name: template-windows11-ltsc-cloudinit
+      description: Windows 11 Enterprise LTSC 2024 Evaluation template built by rangectl
+    os:
+      image_name: Windows 11 Enterprise LTSC 2024 Evaluation
+      virtio_driver_os: w11
+      proxmox_os: win11
+      iso:
+        source: pve-truenas:iso/windows_11_ltsc_eval_x64.iso
+    hardware:
+      cpu_cores: 4
+      memory_mb: 8192
+      disk_gb: 96
+      bios: ovmf
+      machine: pc-q35-11.0
+      disk_type: scsi
+      disk_io_thread: true
+      disk_cache: writeback
+      enable_efi: true
+      efi_storage_pool: local-zfs-nvme
+      enable_tpm: true
+      efi_pre_enrolled_keys: true
+      tpm_version: v2.0
+      tpm_storage_pool: local-zfs-nvme
+      disk_format: raw
+      build_vlan: "60"
+      build_ip: 10.60.0.206
+      build_gateway: 10.60.0.1
+      build_dns: 10.60.0.1
+    unattended:
+      locale: en-US
+      timezone: UTC
+      keyboard: en-US
+      administrator_username: vagrant
+      administrator_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD
+    provisioning:
+      communicator: winrm
+      winrm_username: vagrant
+      winrm_password_env: RANGECTL_TEMPLATE_WINDOWS_ADMIN_PASSWORD

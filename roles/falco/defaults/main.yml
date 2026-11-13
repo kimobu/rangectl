@@ -1,0 +1,20 @@
+---
+falco_chart_repo_name: falcosecurity
+falco_chart_repo_url: https://falcosecurity.github.io/charts
+falco_chart_version: "9.1.0"
+falco_chart_sha256: 2a767d6aeccf2392c5e263ae1f5e0950520affe3a9908ff7986ac213649c45b4
+falco_chart_url: "https://github.com/falcosecurity/charts/releases/download/falco-{{ falco_chart_version }}/falco-{{ falco_chart_version }}.tgz"
+falco_chart_cache_path: "/tmp/rangectl-falco-{{ falco_chart_version }}.tgz"
+falco_chart_remote_path: "/etc/rangectl/falco/falco-{{ falco_chart_version }}.tgz"
+falco_manifest_path: /etc/rangectl/falco/manifest.yml
+falco_release_name: falco
+falco_namespace: falco
+falco_log_path: /var/log/falco.log
+falco_log_rotate_size: 25M
+falco_log_rotate_count: 4
+falco_audit_log_path: /var/log/kubernetes/audit.log
+falco_audit_log_max_age_days: 2
+falco_audit_log_max_backups: 3
+falco_audit_log_max_size_mb: 50
+falco_minimum_free_mb: 10240
+falco_helm_timeout: 10m

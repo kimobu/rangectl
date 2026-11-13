@@ -1,0 +1,10 @@
+apiVersion: rangectl.dev/v1alpha1
+kind: Range
+metadata:
+  name: example
+  description: Minimal public example range for validating rangectl installation.
+providers: {}
+spaces: {}
+hosts: []
+docs:
+  output: docs/generated/example.md

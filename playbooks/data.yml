@@ -1,0 +1,60 @@
+---
+- name: "Read data files"
+  hosts: domain:extensions
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "{{ data_path }}/config.json"
+  tasks:
+    - name: save the Json data to a Variable as a Fact
+      ansible.builtin.set_fact:
+        lab: "{{lab}}"
+        cacheable: yes
+      run_once: true
+
+    - name: find domain_adapter
+      ansible.builtin.set_fact:
+        domain_adapter: "{{ item.connection_name }}"
+      when:
+        - item.ipv4 is defined
+        - item.ipv4.address is defined
+        - item.ipv4.address == hostvars[inventory_hostname].ansible_host
+      loop: "{{ ansible_interfaces | default([]) }}"
+      run_once: true
+
+    - name: find nat_adapter
+      ansible.builtin.set_fact:
+        nat_adapter: "{{ item.connection_name }}"
+      when:
+        - item.ipv4 is defined
+        - item.ipv4.address is defined
+        - item.ipv4.address != hostvars[inventory_hostname].ansible_host
+      loop: "{{ ansible_interfaces | default([]) }}"
+      run_once: true
+
+    - name: find number of interfaces
+      ansible.builtin.set_fact:
+        number_of_interfaces: "{{ ansible_interfaces | default([]) | length }}"
+      run_once: true
+
+    - name: find if two adapters
+      ansible.builtin.set_fact:
+        two_adapters: "{{ 'yes' if (number_of_interfaces | int) != 1 else 'no' }}"
+      run_once: true
+
+    - name: confirm nat_adapter
+      ansible.builtin.set_fact:
+        nat_adapter: "{{ domain_adapter }}"
+      when:
+        - not (two_adapters | bool)
+        - domain_adapter is defined
+      run_once: true
+
+#    - debug:
+#        msg: "domain interface : {{domain_adapter}}"
+#    - debug:
+#        msg: "number_of_interfaces : {{number_of_interfaces}}"
+#    - debug:
+#        msg: "two_adapters : {{two_adapters}}"
+#    - debug:
+#        msg: "nat interface : {{nat_adapter}}"

@@ -1,0 +1,58 @@
+---
+- name: Validate SMTP submitter configuration
+  ansible.builtin.assert:
+    that:
+      - smtp_submitter_host | length > 0
+      - smtp_submitter_port | int > 0
+      - smtp_submitter_port | int <= 65535
+    quiet: true
+
+- name: Validate SMTP message definitions
+  ansible.builtin.assert:
+    that:
+      - item.id is defined
+      - item.id is match('^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$')
+      - item.from is defined
+      - item.to is defined
+      - item.subject is defined
+    fail_msg: "SMTP message definitions require a safe id, from, to, and subject"
+    quiet: true
+  loop: "{{ smtp_submitter_messages }}"
+  loop_control:
+    label: "{{ item.id | default('missing-id') }}"
+
+- name: Ensure SMTP submitter message directory exists
+  ansible.builtin.file:
+    path: "{{ smtp_submitter_config_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Deploy TCP SMTP submitter
+  ansible.builtin.template:
+    src: rangectl-smtp-submit.py.j2
+    dest: "{{ smtp_submitter_binary_path }}"
+    mode: "0755"
+
+- name: Deploy SMTP message definitions
+  ansible.builtin.copy:
+    dest: "{{ smtp_submitter_config_dir }}/{{ item.id }}.json"
+    content: "{{ item | to_nice_json }}\n"
+    mode: "0600"
+  loop: "{{ smtp_submitter_messages }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Deploy TCP SMTP submission services
+  ansible.builtin.template:
+    src: rangectl-smtp.service.j2
+    dest: "/etc/systemd/system/{{ smtp_submitter_service_prefix }}-{{ item.id }}.service"
+    mode: "0644"
+  loop: "{{ smtp_submitter_messages }}"
+  loop_control:
+    label: "{{ item.id }}"
+  register: smtp_submitter_services
+
+- name: Reload systemd for TCP SMTP submission services
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: smtp_submitter_services.changed

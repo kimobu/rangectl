@@ -1,0 +1,13 @@
+---
+proxmox_span_so_vmid: 202
+proxmox_span_so_monitor_net: 1
+proxmox_span_blue_vlans:
+  - 50
+  - 51
+  - 52
+proxmox_span_grey_vlans:
+  - 60
+proxmox_span_pfsense_vmids:
+  - 121
+proxmox_span_filter_pref: 49152
+proxmox_span_interval: 2min

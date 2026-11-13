@@ -1,0 +1,5 @@
+{
+  "pipeline": {
+    "name": "esf-ecs-normalize-pipeline"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "description": "Normalize Kubernetes Zeek sidecar JSON to ECS",
+  "version": 2,
+  "processors": [
+    {"date": {"field": "ts", "target_field": "@timestamp", "formats": ["UNIX"], "ignore_failure": true}},
+    {"grok": {"field": "log.file.path", "patterns": ["/var/log/zeek/%{DATA:orchestrator.resource.name}/%{DATA:zeek.log.type}\\.log"], "ignore_failure": true}},
+    {"rename": {"field": "source", "target_field": "zeek.source", "ignore_missing": true, "override": false}},
+    {"dot_expander": {"field": "*", "ignore_failure": true}},
+    {"rename": {"field": "uid", "target_field": "event.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "id.orig_h", "target_field": "source.ip", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "id.orig_p", "target_field": "source.port", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "id.resp_h", "target_field": "destination.ip", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "id.resp_p", "target_field": "destination.port", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "proto", "target_field": "network.transport", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "service", "target_field": "network.protocol", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "orig_bytes", "target_field": "source.bytes", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "resp_bytes", "target_field": "destination.bytes", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "orig_pkts", "target_field": "source.packets", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "resp_pkts", "target_field": "destination.packets", "ignore_missing": true, "override": false}},
+    {"script": {"lang": "painless", "source": "if (ctx.event == null) ctx.event = new HashMap(); def kind = ctx.zeek?.log?.type; ctx.event.dataset = kind == null ? 'zeek.log' : 'zeek.' + kind; ctx.event.category = ['network']; ctx.event.type = kind == 'conn' ? ['connection','end'] : ['protocol']; if (ctx.source?.bytes != null || ctx.destination?.bytes != null) { if (ctx.network == null) ctx.network = new HashMap(); ctx.network.bytes = (ctx.source?.bytes == null ? 0 : ctx.source.bytes) + (ctx.destination?.bytes == null ? 0 : ctx.destination.bytes); } if (ctx.source?.packets != null || ctx.destination?.packets != null) { if (ctx.network == null) ctx.network = new HashMap(); ctx.network.packets = (ctx.source?.packets == null ? 0 : ctx.source.packets) + (ctx.destination?.packets == null ? 0 : ctx.destination.packets); }"}},
+    {"set": {"field": "event.kind", "value": "event"}},
+    {"set": {"field": "event.module", "value": "zeek"}},
+    {"set": {"field": "orchestrator.type", "value": "kubernetes"}},
+    {"set": {"field": "observer.type", "value": "ids"}},
+    {"set": {"field": "observer.product", "value": "Zeek"}},
+    {"set": {"field": "observer.name", "copy_from": "orchestrator.resource.name", "ignore_empty_value": true}},
+    {"script": {"lang": "painless", "source": "def ips = new HashSet(); if (ctx.source?.ip != null) ips.add(ctx.source.ip); if (ctx.destination?.ip != null) ips.add(ctx.destination.ip); if (!ips.isEmpty()) { if (ctx.related == null) ctx.related = new HashMap(); ctx.related.ip = new ArrayList(ips); }"}}
+  ],
+  "on_failure": [
+    {"set": {"field": "event.kind", "value": "pipeline_error"}},
+    {"set": {"field": "error.message", "value": "Zeek pipeline failure in {{{ _ingest.on_failure_processor_type }}}: {{{ _ingest.on_failure_message }}}"}}
+  ]
+}

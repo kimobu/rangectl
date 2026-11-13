@@ -1,0 +1,39 @@
+$ErrorActionPreference = "Stop"
+
+{% if activity_agent_expected_user is defined and activity_agent_expected_user %}
+$expectedUser = "{{ activity_agent_expected_user }}"
+if ($env:USERNAME -ne $expectedUser) {
+    exit 0
+}
+{% endif %}
+
+$base = "{{ activity_agent_install_dir | default('C:\ProgramData\rangectl-activity') }}"
+$config = Join-Path $base "activity.json"
+$state = Join-Path $base "state"
+$python = "{{ activity_agent_python | default('C:\Program Files\Python311\python.exe') }}"
+
+if (!(Test-Path $config)) {
+    throw "activity config not found: $config"
+}
+if (!(Test-Path $python)) {
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        $python = $pythonCmd.Source
+    } else {
+        throw "python.exe not found for rangectl activity agent"
+    }
+}
+
+$existing = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -like "*rangectl_lib.activity.agent*" -and $_.CommandLine -like "*$config*" }
+if ($existing) {
+    exit 0
+}
+
+$env:PYTHONPATH = $base
+$env:RANGECTL_ACTIVITY_STATE_DIR = $state
+{% if activity_agent_scenario_state_url is defined and activity_agent_scenario_state_url %}
+$env:RANGECTL_SCENARIO_STATE_URL = "{{ activity_agent_scenario_state_url }}"
+$env:RANGECTL_SCENARIO_STATE_TOKEN = "{{ activity_agent_scenario_state_token }}"
+{% endif %}
+Start-Process -FilePath $python -ArgumentList @("-m", "rangectl_lib.activity.agent", $config) -WorkingDirectory $base -WindowStyle Hidden

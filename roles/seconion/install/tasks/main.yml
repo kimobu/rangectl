@@ -1,0 +1,257 @@
+---
+- name: Add Security Onion host record
+  vars:
+    ansible_become: false
+  community.windows.win_lineinfile:
+    path: C:\Windows\System32\drivers\etc\hosts
+    regex: "^{{ seconion_ip | default('10.60.0.20') | regex_escape }}\\s+.*(securityonion|\\sso)(\\s|$).*"
+    line: "{{ seconion_host_line | default('10.60.0.20    securityonion so') }}"
+    state: present
+
+- name: Install Elastic Agent
+  vars:
+    ansible_become: false
+    agent_installer_package: "{{ seconion_windows_agent_package | default('exe') | lower }}"
+    agent_installer_filename: "so-elastic-agent_windows_amd64.{{ agent_installer_package }}"
+    agent_installer_url: "{{ lookup('env', 'RANGECTL_WINDOWS_ELASTIC_AGENT_URL') | default(seconion_windows_agent_url | default(''), true) }}"
+    agent_installer_unc: "{{ seconion_windows_agent_unc | default('') }}"
+    agent_installer_unc_user: "{{ seconion_windows_agent_unc_user | default('') }}"
+    agent_installer_unc_password: "{{ seconion_windows_agent_unc_password | default('') }}"
+    agent_installer_checksum: "{{ lookup('env', 'RANGECTL_WINDOWS_ELASTIC_AGENT_SHA256') | default(seconion_windows_agent_sha256 | default(''), true) }}"
+    agent_installer_source: "{{ rangectl_root }}/artifacts/securityonion/{{ agent_installer_filename }}"
+    agent_install_dir: C:\ProgramData\rangectl
+    agent_installer_dir: C:\ProgramData\rangectl\installers
+    agent_installer_local: C:\ProgramData\rangectl\installers\{{ agent_installer_filename }}
+    agent_install_script: C:\ProgramData\rangectl\install-elastic-agent.ps1
+    agent_install_log: C:\ProgramData\rangectl\elastic-agent-install.log
+    agent_install_task: RangectlElasticAgentInstall
+    elastic_agent_path: C:\Program Files\Elastic\Agent\elastic-agent.exe
+  block:
+    - name: Check for existing Elastic Agent install
+      ansible.windows.win_stat:
+        path: "{{ elastic_agent_path }}"
+      register: elastic_agent_stat
+
+    - name: Ensure rangectl install directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ agent_install_dir }}"
+        - "{{ agent_installer_dir }}"
+      when: not elastic_agent_stat.stat.exists
+
+    - name: Check staged Elastic Agent installer
+      ansible.windows.win_stat:
+        path: "{{ agent_installer_local }}"
+        checksum_algorithm: sha256
+      register: agent_installer_stat
+      when:
+        - not elastic_agent_stat.stat.exists
+        - agent_installer_checksum | length > 0
+
+    - name: Remove corrupt staged Elastic Agent installer
+      ansible.windows.win_file:
+        path: "{{ agent_installer_local }}"
+        state: absent
+      when:
+        - not elastic_agent_stat.stat.exists
+        - agent_installer_checksum | length > 0
+        - agent_installer_stat.stat.exists | default(false)
+        - agent_installer_stat.stat.checksum | lower != agent_installer_checksum | lower
+
+    - name: Stage Elastic Agent installer locally
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $Url = '{{ agent_installer_url }}'
+        $Dest = '{{ agent_installer_local }}'
+        $ExpectedSha256 = '{{ agent_installer_checksum }}'
+
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Dest) | Out-Null
+        if (Test-Path -LiteralPath $Dest) {
+          if ($ExpectedSha256) {
+            $hash = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -eq $ExpectedSha256.ToLowerInvariant()) {
+              Write-Host "Using existing verified installer $Dest"
+              exit 0
+            }
+          } else {
+            Write-Host "Using existing installer $Dest"
+            exit 0
+          }
+          Remove-Item -LiteralPath $Dest -Force
+        }
+
+        Write-Host "Downloading $Url to $Dest"
+        $client = New-Object System.Net.WebClient
+        try {
+          $client.DownloadFile($Url, $Dest)
+        } finally {
+          $client.Dispose()
+        }
+
+        if ($ExpectedSha256) {
+          $hash = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
+            Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+            throw "Elastic Agent installer checksum mismatch: expected $ExpectedSha256 got $hash"
+          }
+        }
+      when:
+        - not elastic_agent_stat.stat.exists
+        - agent_installer_url | length > 0
+        - agent_installer_unc | length == 0
+      throttle: "{{ seconion_windows_download_throttle | default(2) }}"
+
+    - name: Stage Elastic Agent installer locally from file share
+      ansible.windows.win_shell: |
+        $ErrorActionPreference = 'Stop'
+        $Source = '{{ agent_installer_unc }}'
+        $Dest = '{{ agent_installer_local }}'
+        $ExpectedSha256 = '{{ agent_installer_checksum }}'
+        $ShareUser = '{{ agent_installer_unc_user }}'
+        $SharePassword = '{{ agent_installer_unc_password }}'
+        $ShareRoot = $null
+
+        if ($Source -match '^\\\\([^\\]+)\\([^\\]+)\\') {
+          $ShareRoot = $Matches[0].TrimEnd('\')
+        }
+
+        if ($ShareRoot -and $ShareUser -and $SharePassword) {
+          & cmd.exe /c "net use `"$ShareRoot`" /delete /y >nul 2>nul"
+          & cmd.exe /c "net use `"$ShareRoot`" /user:`"$ShareUser`" `"$SharePassword`" /persistent:no"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to authenticate to Elastic Agent installer share $ShareRoot as $ShareUser"
+          }
+        }
+
+        if (-not (Test-Path -LiteralPath $Source)) {
+          throw "Elastic Agent installer share source not found: $Source"
+        }
+
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Dest) | Out-Null
+        if (Test-Path -LiteralPath $Dest) {
+          if ($ExpectedSha256) {
+            $hash = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -eq $ExpectedSha256.ToLowerInvariant()) {
+              Write-Host "Using existing verified installer $Dest"
+              exit 0
+            }
+          } else {
+            Write-Host "Using existing installer $Dest"
+            exit 0
+          }
+          Remove-Item -LiteralPath $Dest -Force
+        }
+
+        Copy-Item -LiteralPath $Source -Destination $Dest -Force
+        if ($ExpectedSha256) {
+          $hash = (Get-FileHash -LiteralPath $Dest -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
+            Remove-Item -LiteralPath $Dest -Force -ErrorAction SilentlyContinue
+            throw "Elastic Agent installer checksum mismatch: expected $ExpectedSha256 got $hash"
+          }
+        }
+
+        if ($ShareRoot -and $ShareUser -and $SharePassword) {
+          & cmd.exe /c "net use `"$ShareRoot`" /delete /y >nul 2>nul"
+        }
+      throttle: "{{ seconion_windows_copy_throttle | default(2) }}"
+      when:
+        - not elastic_agent_stat.stat.exists
+        - agent_installer_unc | length > 0
+
+    - name: Stage Elastic Agent installer locally from controller
+      ansible.windows.win_copy:
+        src: "{{ agent_installer_source }}"
+        dest: "{{ agent_installer_local }}"
+      throttle: "{{ seconion_windows_copy_throttle | default(2) }}"
+      when:
+        - not elastic_agent_stat.stat.exists
+        - agent_installer_url | length == 0
+        - agent_installer_unc | length == 0
+
+    - name: Stage Elastic Agent scheduled install script
+      ansible.windows.win_copy:
+        dest: "{{ agent_install_script }}"
+        content: |
+          $ErrorActionPreference = 'Stop'
+          $Log = '{{ agent_install_log }}'
+          $Installer = '{{ agent_installer_local }}'
+          $Package = '{{ agent_installer_package }}'
+          $Agent = '{{ elastic_agent_path }}'
+          $TimeoutSeconds = {{ seconion_windows_install_timeout | default(600) }}
+          $ExpectedSha256 = '{{ agent_installer_checksum }}'
+
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Log) | Out-Null
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Installer) | Out-Null
+          Start-Transcript -Path $Log -Append | Out-Null
+          try {
+            if (Test-Path -LiteralPath $Agent) {
+              Write-Host "Elastic Agent already installed at $Agent"
+              exit 0
+            }
+
+            if (Test-Path -LiteralPath $Installer) {
+              Write-Host "Using local installer $Installer"
+            } else {
+              throw "Elastic Agent installer not found: $Installer"
+            }
+
+            if ($ExpectedSha256) {
+              $hash = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
+                throw "Elastic Agent installer checksum mismatch: expected $ExpectedSha256 got $hash"
+              }
+            }
+
+            Unblock-File -LiteralPath $Installer -ErrorAction SilentlyContinue
+            if ($Package -eq 'msi') {
+              Write-Host "Running Elastic Agent MSI installer"
+              $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $Installer, '/qn', '/norestart') -WorkingDirectory (Split-Path -Parent $Installer) -PassThru
+              $successCodes = @(0, 1602, 1605, 1641, 3010)
+            } else {
+              Write-Host "Running Elastic Agent EXE installer"
+              $process = Start-Process -FilePath $Installer -WorkingDirectory (Split-Path -Parent $Installer) -PassThru
+              $successCodes = @(0, 1602, 1605)
+            }
+            if (!$process.WaitForExit($TimeoutSeconds * 1000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Elastic Agent installer timed out after $TimeoutSeconds seconds"
+            }
+            Write-Host "Installer exit code: $($process.ExitCode)"
+            if ($process.ExitCode -notin $successCodes) {
+              throw "Elastic Agent installer failed with exit code $($process.ExitCode)"
+            }
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+      when: not elastic_agent_stat.stat.exists
+
+    - name: Register Elastic Agent installation scheduled task
+      ansible.windows.win_command: >-
+        schtasks.exe /Create /TN "{{ agent_install_task }}" /SC ONCE /ST 23:59
+        /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{{ agent_install_script }}\""
+        /RU SYSTEM /RL HIGHEST /F
+      when: not elastic_agent_stat.stat.exists
+
+    - name: Start Elastic Agent installation scheduled task
+      ansible.windows.win_command: schtasks.exe /Run /TN "{{ agent_install_task }}"
+      throttle: "{{ seconion_windows_install_throttle | default(4) }}"
+      when: not elastic_agent_stat.stat.exists
+
+    - name: Wait for Elastic Agent installation
+      ansible.windows.win_stat:
+        path: "{{ elastic_agent_path }}"
+      register: elastic_agent_installed
+      retries: "{{ seconion_windows_install_retries | default(90) }}"
+      delay: "{{ seconion_windows_install_delay | default(10) }}"
+      until: elastic_agent_installed.stat.exists
+      when: not elastic_agent_stat.stat.exists
+
+    - name: Remove Elastic Agent installation scheduled task
+      ansible.windows.win_command: schtasks.exe /Delete /TN "{{ agent_install_task }}" /F
+      failed_when: false
+      changed_when: false
+      when: not elastic_agent_stat.stat.exists
+  when: seconion_windows_install_agent | default(true) | bool

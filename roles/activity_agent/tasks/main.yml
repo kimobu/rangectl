@@ -1,0 +1,8 @@
+---
+- name: Install rangectl activity agent on Windows
+  ansible.builtin.include_tasks: windows.yml
+  when: ansible_os_family is defined and ansible_os_family == "Windows"
+
+- name: Install rangectl activity agent on POSIX hosts
+  ansible.builtin.include_tasks: posix.yml
+  when: ansible_os_family is not defined or ansible_os_family != "Windows"

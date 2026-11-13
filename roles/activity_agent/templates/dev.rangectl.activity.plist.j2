@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{{ activity_agent_launchd_label }}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}/{{ activity_agent_launcher_filename }}</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{{ activity_agent_stdout_path }}</string>
+  <key>StandardErrorPath</key>
+  <string>{{ activity_agent_stderr_path }}</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+</dict>
+</plist>

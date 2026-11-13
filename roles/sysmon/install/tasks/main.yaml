@@ -1,0 +1,128 @@
+- name: (Windows) Create installation directory
+  ansible.windows.win_file:
+    path: "C:\\Program Files\\Sysmon"
+    state: directory
+
+- name: Check if Sysmon is already installed
+  ansible.windows.win_service_info:
+    name: sysmon64
+  register: sysmon_service_info
+
+- name: Check staged Sysmon binary
+  ansible.windows.win_stat:
+    path: "C:\\Program Files\\Sysmon\\Sysmon64.exe"
+  register: sysmon_binary_stat
+
+- name: Check Sysmon installer on controller
+  ansible.builtin.stat:
+    path: "{{ sysmon_installer_src }}"
+  register: sysmon_installer_local
+  delegate_to: localhost
+  become: false
+
+- name: Fail when Sysmon is not installed and no installer is available
+  ansible.builtin.fail:
+    msg: >-
+      Sysmon64.exe is not installed on the endpoint or staged at
+      {{ sysmon_installer_src }}. Download {{ sysmon_download_url }}, extract
+      Sysmon64.exe to that path, and rerun this role. See artifacts/README.md.
+  when:
+    - not (sysmon_service_info.exists | default(false))
+    - not (sysmon_binary_stat.stat.exists | default(false))
+    - not sysmon_installer_local.stat.exists
+
+- name: Upload Sysmon
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    dc: "{{lab.domains[domain].dc}}"
+    dc_hostname: "{{lab.hosts[dc].hostname}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{domain}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  win_copy:
+    src: "{{ sysmon_installer_src }}"
+    dest: "C:\\Program Files\\Sysmon\\Sysmon64.exe"
+  when: sysmon_installer_local.stat.exists
+
+- name: Upload Sysmon config
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    dc: "{{lab.domains[domain].dc}}"
+    dc_hostname: "{{lab.hosts[dc].hostname}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{domain}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  win_copy:
+    src: files/sysmonconfig.xml
+    dest: "C:\\Program Files\\Sysmon\\sysmonconfig.xml"
+
+
+- name: (Windows) Install sysmon
+  ansible.windows.win_powershell:
+    script: |
+      $ErrorActionPreference = 'Stop'
+      $taskName = 'rangectl-sysmon-install'
+      $scriptPath = 'C:\ProgramData\rangectl\install-sysmon.ps1'
+      $logPath = 'C:\ProgramData\rangectl\sysmon-install.log'
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $scriptPath) | Out-Null
+      @(
+        "$ErrorActionPreference = 'Continue'",
+        "Set-Location 'C:\Program Files\Sysmon'",
+        ".\Sysmon64.exe -i .\sysmonconfig.xml -accepteula *> $logPath",
+        "$exitCode = $LASTEXITCODE",
+        "if ($exitCode -ne 0 -and -not (Get-Service -Name sysmon64 -ErrorAction SilentlyContinue)) {",
+        "  'First Sysmon install attempt failed with exit code ' + $exitCode + '; retrying once.' | Add-Content -LiteralPath $logPath",
+        "  Start-Sleep -Seconds 10",
+        "  .\Sysmon64.exe -i .\sysmonconfig.xml -accepteula *>> $logPath",
+        "  $exitCode = $LASTEXITCODE",
+        "}",
+        'exit $exitCode'
+      ) | Set-Content -LiteralPath $scriptPath -Encoding ASCII
+
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      $action = New-ScheduledTaskAction `
+        -Execute 'powershell.exe' `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+      $task = New-ScheduledTask -Action $action -Principal $principal
+      Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
+      Start-ScheduledTask -TaskName $taskName
+
+      $deadline = (Get-Date).AddMinutes(5)
+      do {
+        Start-Sleep -Seconds 5
+        $state = (Get-ScheduledTask -TaskName $taskName).State
+      } while ($state -ne 'Ready' -and (Get-Date) -lt $deadline)
+
+      $info = Get-ScheduledTaskInfo -TaskName $taskName
+      $service = Get-Service -Name sysmon64 -ErrorAction SilentlyContinue
+      $log = Get-Content -LiteralPath $logPath -ErrorAction SilentlyContinue | Select-Object -Last 80
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+      [pscustomobject]@{
+        LastTaskResult = $info.LastTaskResult
+        ServiceExists = [bool]$service
+        ServiceStatus = if ($service) { [string]$service.Status } else { '' }
+        Log = ($log -join "`n")
+      }
+  register: sysmon_install_result
+  failed_when: false
+  when: not (sysmon_service_info.exists | default(false))
+
+- name: Check Sysmon service after install attempt
+  ansible.windows.win_service_info:
+    name: sysmon64
+  register: sysmon_service_after_install
+
+- name: Fail when Sysmon did not install
+  ansible.builtin.fail:
+    msg: |
+      Sysmon install failed.
+      result={{ sysmon_install_result.output | default(sysmon_install_result) }}
+  when:
+    - not (sysmon_service_info.exists | default(false))
+    - not (sysmon_service_after_install.exists | default(false))

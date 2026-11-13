@@ -1,0 +1,24 @@
+---
+seconion_artifact_dir: "{{ role_path | dirname | dirname | dirname }}/artifacts/securityonion"
+seconion_package_base_url: "https://securityonion/packages"
+seconion_artifact_validate_certs: false
+seconion_artifact_timeout: 120
+seconion_artifact_auth_env_file: "~/.seconion.env"
+seconion_artifact_refresh_with_auth: false
+seconion_artifact_min_size: 1000000
+seconion_artifacts:
+  windows_amd64:
+    filename: so-elastic-agent_windows_amd64.exe
+    url_name: so-elastic-agent_windows_amd64
+  windows_amd64_msi:
+    filename: so-elastic-agent_windows_amd64.msi
+    url_name: so-elastic-agent_windows_amd64_msi
+  linux_amd64:
+    filename: so-elastic-agent_linux_amd64
+    url_name: so-elastic-agent_linux_amd64
+  darwin_amd64:
+    filename: so-elastic-agent_darwin_amd64
+    url_name: so-elastic-agent_darwin_amd64
+  darwin_arm64:
+    filename: so-elastic-agent_darwin_arm64
+    url_name: so-elastic-agent_darwin_arm64

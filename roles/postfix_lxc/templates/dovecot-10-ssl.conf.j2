@@ -1,0 +1,5 @@
+ssl = yes
+ssl_cert = <{{ postfix_cert_path }}
+ssl_key = <{{ postfix_key_path }}
+ssl_client_ca_dir = /etc/ssl/certs
+ssl_dh = </usr/share/dovecot/dh.pem

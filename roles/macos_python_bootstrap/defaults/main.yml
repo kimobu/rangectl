@@ -1,0 +1,7 @@
+---
+macos_python_bootstrap_version: "3.12.8"
+macos_python_bootstrap_pkg: "python-{{ macos_python_bootstrap_version }}-macos11.pkg"
+macos_python_bootstrap_url: "https://www.python.org/ftp/python/{{ macos_python_bootstrap_version }}/{{ macos_python_bootstrap_pkg }}"
+macos_python_bootstrap_artifact_dir: "{{ playbook_dir }}/../../artifacts/macos"
+macos_python_bootstrap_interpreter: /usr/local/bin/python3
+

@@ -1,0 +1,43 @@
+# See /usr/share/postfix/main.cf.dist for a commented, more complete version
+
+smtpd_banner = $myhostname ESMTP $mail_name (Debian/GNU)
+biff = no
+append_dot_mydomain = no
+alias_maps = hash:/etc/aliases
+alias_database = hash:/etc/aliases
+mydestination = {{ postfix_hostname }}, localhost.{{ postfix_mailname }}, localhost
+relayhost =
+mynetworks = {{ postfix_mynetworks }}
+inet_interfaces = all
+recipient_delimiter = +
+compatibility_level = 2
+myorigin = /etc/mailname
+mailbox_size_limit = 0
+inet_protocols = ipv4
+home_mailbox = Maildir/
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
+smtpd_sasl_local_domain =
+smtpd_sasl_security_options = noanonymous
+smtpd_sasl_tls_security_options = noanonymous
+broken_sasl_auth_clients = yes
+smtpd_sasl_auth_enable = yes
+smtp_tls_security_level = none
+smtpd_tls_security_level = none
+smtp_tls_note_starttls_offer = no
+smtpd_tls_key_file = {{ postfix_key_path }}
+smtpd_tls_cert_file = {{ postfix_cert_path }}
+smtpd_tls_loglevel = 1
+smtpd_tls_received_header = yes
+myhostname = {{ postfix_hostname }}
+smtpd_tls_auth_only = no
+tls_random_source = dev:/dev/urandom
+{% if postfix_virtual_domains | default([]) | length > 0 %}
+virtual_mailbox_domains = {{ postfix_virtual_domains | join(' ') }}
+virtual_mailbox_base = {{ postfix_virtual_mailbox_base }}
+virtual_mailbox_maps = hash:/etc/postfix/virtual_mailbox_maps
+virtual_minimum_uid = 1001
+virtual_uid_maps = static:1001
+virtual_gid_maps = static:1001
+virtual_transport = virtual
+{% endif %}

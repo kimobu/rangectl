@@ -1,0 +1,347 @@
+---
+- name: Select Kubernetes Goat resolver servers
+  ansible.builtin.set_fact:
+    kubernetes_goat_effective_dns_servers: >-
+      {{
+        (kubernetes_goat_dns_servers | default([
+          dns_server | default(ansible_default_ipv4.gateway | default('1.1.1.1')),
+          '1.1.1.1'
+        ]))
+        | reject('equalto', '')
+        | unique
+        | list
+      }}
+
+- name: Ensure systemd-resolved drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: '0755'
+
+- name: Configure resolver for Kubernetes Goat package installation
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/rangectl.conf
+    mode: '0644'
+    content: |
+      [Resolve]
+      DNS={{ kubernetes_goat_effective_dns_servers | join(' ') }}
+      FallbackDNS=1.1.1.1 8.8.8.8
+      Domains=~.
+  register: kubernetes_goat_resolved_config
+
+- name: Restart systemd-resolved when resolver config changes
+  ansible.builtin.service:
+    name: systemd-resolved
+    state: restarted
+  when: kubernetes_goat_resolved_config.changed
+
+- name: Flush resolver cache
+  ansible.builtin.command:
+    argv:
+      - resolvectl
+      - flush-caches
+  changed_when: false
+  failed_when: false
+
+- name: Install Kubernetes Goat host packages
+  ansible.builtin.apt:
+    name: "{{ kubernetes_goat_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure qemu guest agent is running
+  ansible.builtin.service:
+    name: qemu-guest-agent
+    state: started
+    enabled: true
+  register: kubernetes_goat_qga_service
+  failed_when: false
+
+- name: Ensure snapd is running
+  ansible.builtin.service:
+    name: snapd
+    state: started
+    enabled: true
+
+- name: Check whether MicroK8s is installed
+  ansible.builtin.command:
+    argv:
+      - snap
+      - list
+      - microk8s
+  register: kubernetes_goat_microk8s_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install MicroK8s
+  ansible.builtin.command:
+    argv:
+      - snap
+      - install
+      - microk8s
+      - --classic
+      - --channel={{ kubernetes_goat_microk8s_channel }}
+  when: kubernetes_goat_microk8s_installed.rc != 0
+
+- name: Wait for MicroK8s to become ready
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - status
+      - --wait-ready
+  changed_when: false
+
+- name: Enable required MicroK8s addons
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - enable
+      - "{{ item }}"
+  loop: "{{ kubernetes_goat_microk8s_addons }}"
+  register: kubernetes_goat_addon_result
+  changed_when: >
+    'is already enabled' not in (kubernetes_goat_addon_result.stdout | default(''))
+    and 'Nothing to do' not in (kubernetes_goat_addon_result.stdout | default(''))
+
+- name: Install kubectl wrapper
+  ansible.builtin.copy:
+    dest: /usr/local/bin/kubectl
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      exec /snap/bin/microk8s kubectl "$@"
+
+- name: Install helm wrapper
+  ansible.builtin.copy:
+    dest: /usr/local/bin/helm
+    mode: '0755'
+    content: |
+      #!/bin/sh
+      exec /snap/bin/microk8s helm3 "$@"
+
+- name: Clone Kubernetes Goat repository
+  ansible.builtin.git:
+    repo: "{{ kubernetes_goat_repo_url }}"
+    dest: "{{ kubernetes_goat_install_dir }}"
+    version: "{{ kubernetes_goat_repo_version }}"
+    update: true
+
+- name: Deploy Kubernetes Goat metadata-db helm chart
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/helm
+      - upgrade
+      - --install
+      - metadata-db
+      - "{{ kubernetes_goat_install_dir }}/scenarios/metadata-db"
+  register: kubernetes_goat_helm
+  changed_when: >
+    'STATUS: deployed' in (kubernetes_goat_helm.stdout | default(''))
+    or 'STATUS: pending-upgrade' in (kubernetes_goat_helm.stdout | default(''))
+    or 'STATUS: pending-install' in (kubernetes_goat_helm.stdout | default(''))
+
+- name: Apply Kubernetes Goat manifests
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kubectl
+      - apply
+      - -f
+      - "{{ kubernetes_goat_install_dir }}/{{ item }}"
+  loop: "{{ kubernetes_goat_manifest_files }}"
+  register: kubernetes_goat_manifest_result
+  changed_when: >
+    'created' in (kubernetes_goat_manifest_result.stdout | default(''))
+    or 'configured' in (kubernetes_goat_manifest_result.stdout | default(''))
+
+- name: Create local Zeek log directory
+  ansible.builtin.file:
+    path: "{{ kubernetes_goat_zeek_log_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  when: kubernetes_goat_zeek_enabled | bool
+
+- name: Install Zeek log rotation policy
+  ansible.builtin.template:
+    src: zeek-logrotate.j2
+    dest: /etc/logrotate.d/kubernetes-goat-zeek
+    owner: root
+    group: root
+    mode: '0644'
+  when: kubernetes_goat_zeek_enabled | bool
+
+- name: Render Zeek sidecar patch
+  ansible.builtin.template:
+    src: zeek-sidecar-patch.yml.j2
+    dest: /tmp/rangectl-zeek-sidecar-patch.yml
+    owner: root
+    group: root
+    mode: '0600'
+  when: kubernetes_goat_zeek_enabled | bool
+
+- name: Add Zeek sidecars to Kubernetes Goat deployments
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kubectl
+      - patch
+      - deployment
+      - "{{ item.name }}"
+      - --namespace
+      - "{{ item.namespace }}"
+      - --type
+      - strategic
+      - --patch-file
+      - /tmp/rangectl-zeek-sidecar-patch.yml
+  loop: "{{ kubernetes_goat_zeek_deployments }}"
+  register: kubernetes_goat_zeek_patch
+  changed_when: "'patched' in (kubernetes_goat_zeek_patch.stdout | default(''))"
+  when: kubernetes_goat_zeek_enabled | bool
+
+- name: Wait for Zeek-enabled deployments
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kubectl
+      - rollout
+      - status
+      - "deployment/{{ item.name }}"
+      - --namespace
+      - "{{ item.namespace }}"
+      - --timeout=180s
+  loop: "{{ kubernetes_goat_zeek_deployments }}"
+  changed_when: false
+  when: kubernetes_goat_zeek_enabled | bool
+
+- name: Check for generated AWS credentials Kubernetes Secret manifest
+  ansible.builtin.stat:
+    path: "{{ kubernetes_goat_aws_secret_manifest_src }}"
+  delegate_to: localhost
+  become: false
+  register: kubernetes_goat_aws_secret_manifest
+  when: kubernetes_goat_aws_secret_enabled | bool
+
+- name: Note skipped AWS credential wiring
+  ansible.builtin.debug:
+    msg: "AWS credential Secret manifest is not present yet. Run infra apply for the AWS stack, then rerun this role to wire AWS creds into Kubernetes."
+  when:
+    - kubernetes_goat_aws_secret_enabled | bool
+    - not (kubernetes_goat_aws_secret_manifest.stat.exists | default(false))
+
+- name: Stage AWS credentials Kubernetes Secret manifest
+  ansible.builtin.copy:
+    src: "{{ kubernetes_goat_aws_secret_manifest_src }}"
+    dest: "{{ kubernetes_goat_aws_secret_remote_path }}"
+    mode: '0600'
+  no_log: true
+  when:
+    - kubernetes_goat_aws_secret_enabled | bool
+    - kubernetes_goat_aws_secret_manifest.stat.exists | default(false)
+
+- name: Apply AWS credentials Kubernetes Secret
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kubectl
+      - apply
+      - -f
+      - "{{ kubernetes_goat_aws_secret_remote_path }}"
+  register: kubernetes_goat_aws_secret_apply
+  changed_when: >
+    'created' in (kubernetes_goat_aws_secret_apply.stdout | default(''))
+    or 'configured' in (kubernetes_goat_aws_secret_apply.stdout | default(''))
+  no_log: true
+  when:
+    - kubernetes_goat_aws_secret_enabled | bool
+    - kubernetes_goat_aws_secret_manifest.stat.exists | default(false)
+
+- name: Remove staged AWS credentials Kubernetes Secret manifest
+  ansible.builtin.file:
+    path: "{{ kubernetes_goat_aws_secret_remote_path }}"
+    state: absent
+  no_log: true
+  when:
+    - kubernetes_goat_aws_secret_enabled | bool
+    - kubernetes_goat_aws_secret_manifest.stat.exists | default(false)
+
+- name: Install Kubernetes Goat access helper
+  ansible.builtin.copy:
+    dest: /usr/local/bin/kubernetes-goat-access
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      set -u
+
+      INSECURE=""
+      KUBECONFIG_ARG=""
+      KUBECTL_INSECURE=""
+
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --insecure)
+            INSECURE="yes"
+            shift
+            ;;
+          --kubeconfig)
+            KUBECONFIG_ARG="$2"
+            shift 2
+            ;;
+          *)
+            echo "unknown arg: $1"
+            shift
+            ;;
+        esac
+      done
+
+      if [[ -n "$KUBECONFIG_ARG" ]]; then
+        export KUBECONFIG="$KUBECONFIG_ARG"
+      fi
+
+      if [[ -n "$INSECURE" ]]; then
+        KUBECTL_INSECURE="--insecure-skip-tls-verify"
+      fi
+
+      if ! kubectl $KUBECTL_INSECURE version >/dev/null 2>&1; then
+        echo "Please check kubectl setup."
+        exit 1
+      fi
+
+      wait_and_forward() {
+        local namespace="$1"
+        local selector="$2"
+        local local_port="$3"
+        local remote_port="$4"
+        local label="$5"
+        local pod_name=""
+
+        while true; do
+          pod_name=$(kubectl $KUBECTL_INSECURE get pods --namespace "$namespace" -l "$selector" -o jsonpath="{.items[0].metadata.name}" 2>/dev/null || true)
+          if [[ -n "$pod_name" ]]; then
+            pod_status=$(kubectl $KUBECTL_INSECURE get pod "$pod_name" --namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            pod_ready=$(kubectl $KUBECTL_INSECURE get pod "$pod_name" --namespace "$namespace" -o jsonpath='{.status.containerStatuses[*].ready}' 2>/dev/null || true)
+            if [[ "$pod_status" == "Running" && "$pod_ready" == *"true"* ]]; then
+              kubectl $KUBECTL_INSECURE --namespace "$namespace" port-forward "$pod_name" --address 0.0.0.0 "$local_port:$remote_port" >/dev/null 2>&1 &
+              echo "$label: http://127.0.0.1:$local_port"
+              return
+            fi
+          fi
+          echo "Waiting for $label pod in namespace $namespace..."
+          sleep 10
+        done
+      }
+
+      echo "Creating port forwards for the Kubernetes Goat scenario set."
+      wait_and_forward default "app=internal-proxy" 1232 3000 "Scenario 3 SSRF"
+      wait_and_forward default "app=system-monitor" 1233 8080 "Scenario 4 container escape"
+      wait_and_forward default "app=poor-registry" 1235 5000 "Scenario 7 private registry"
+      wait_and_forward big-monolith "app=hunger-check" 1236 8080 "Scenario 16 RBAC"
+      echo "Scenario 15 hidden-in-layers is a Kubernetes Job; inspect it with: kubectl get jobs"
+      wait
+
+- name: Show Kubernetes Goat pods
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/kubectl
+      - get
+      - pods
+      - -A
+  changed_when: false

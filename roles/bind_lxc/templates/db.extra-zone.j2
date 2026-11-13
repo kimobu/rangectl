@@ -1,0 +1,16 @@
+;
+; {{ item.name }}
+;
+$TTL    {{ item.ttl | default(300) }}
+@       IN      SOA     {{ item.name }}. root.{{ item.name }}. (
+                              {{ item.serial | default(10) }}      ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                            300 )       ; Negative Cache TTL
+;
+@       IN      NS      ns.{{ item.name }}.
+ns      IN      A       {{ bind_ip }}
+{% for record in item.records | default([]) %}
+{{ record.name | default('@') }}       IN      {{ record.type | default('A') }}       {{ record.value }}
+{% endfor %}

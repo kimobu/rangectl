@@ -1,0 +1,6 @@
+---
+- hosts: pfsense
+  gather_facts: no
+  connection: ssh
+  roles:
+    - pfsense

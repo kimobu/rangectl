@@ -1,0 +1,87 @@
+---
+- name: Get PowerShell major version
+  win_shell: "$PSVersionTable.PSVersion.Major"
+  register: powershell_version_raw
+
+- name: Set PowerShell major version fact
+  set_fact:
+    powershell_major: "{{ powershell_version_raw.stdout | trim | int }}"
+
+- block:
+    - name: Ensure WMF 5.1 installer is available on controller
+      stat:
+        path: "{{ wmf5_installer_src }}"
+      register: wmf5_local
+      delegate_to: localhost
+      become: false
+
+    - name: Abort if WMF 5.1 installer is missing
+      fail:
+        msg: >-
+          WMF 5.1 installer not found at {{ wmf5_installer_src }}. Download
+          Win8.1AndW2K12R2-KB3191564-x64.msu from {{ wmf5_download_url }}, save
+          it at that path, and rerun this role. See artifacts/README.md.
+      when: not wmf5_local.stat.exists
+
+    - name: Copy WMF 5.1 installer to target
+      win_copy:
+        src: "{{ wmf5_installer_src }}"
+        dest: "{{ wmf5_installer_dest }}"
+
+    - name: Install WMF 5.1
+      win_hotfix:
+        source: "{{ wmf5_installer_dest }}"
+        state: present
+      register: wmf5_install
+
+    - name: Reboot after WMF install if required
+      win_reboot:
+        msg: "Rebooting after WMF 5.1 installation"
+        reboot_timeout: 1200
+      when: wmf5_install.reboot_required | default(false)
+  when: (powershell_major | int) < 5
+
+- name: Ensure NuGet provider DLL is available on controller
+  stat:
+    path: "{{ nuget_provider_src }}"
+  register: nuget_local
+  delegate_to: localhost
+  become: false
+
+- name: Check if NuGet provider is already present on target
+  win_stat:
+    path: "{{ ansible_env['ProgramFiles'] }}\\PackageManagement\\ProviderAssemblies\\NuGet\\2.8.5.208\\Microsoft.PackageManagement.NuGetProvider.dll"
+  register: nuget_dest
+  when: nuget_local.stat.exists
+
+- name: Ensure NuGet provider directory exists
+  win_file:
+    path: "{{ ansible_env['ProgramFiles'] }}\\PackageManagement\\ProviderAssemblies\\NuGet\\2.8.5.208"
+    state: directory
+  when: nuget_local.stat.exists
+
+- name: Copy NuGet provider DLL to target
+  win_copy:
+    src: "{{ nuget_provider_src }}"
+    dest: "{{ ansible_env['ProgramFiles'] }}\\PackageManagement\\ProviderAssemblies\\NuGet\\2.8.5.208\\Microsoft.PackageManagement.NuGetProvider.dll"
+  args:
+    remote_src: false
+  register: nuget_copy
+  when:
+    - nuget_local.stat.exists
+    - not (nuget_dest.stat.exists | default(false))
+
+- name: Install NuGet provider from PowerShell Gallery when offline DLL is absent
+  win_shell: |
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope AllUsers
+  register: nuget_online_install
+  changed_when: "'NuGet' in (nuget_online_install.stdout | default(''))"
+  when: not nuget_local.stat.exists
+
+- name: Import NuGet provider to validate installation
+  win_shell: |
+    Import-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force
+    Get-PackageProvider -Name NuGet | Select-Object -First 1 -ExpandProperty Version
+  register: nuget_import
+  changed_when: false

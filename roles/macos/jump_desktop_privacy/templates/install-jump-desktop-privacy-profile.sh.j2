@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+profile="{{ jump_desktop_privacy_profile_path }}"
+identifier="{{ jump_desktop_privacy_identifier }}"
+log="${HOME}/Library/Logs/rangectl-jump-desktop-privacy-profile.log"
+mkdir -p "${HOME}/Library/Logs"
+
+if /usr/bin/profiles show -type configuration 2>/dev/null | /usr/bin/grep -q "$identifier"; then
+  echo "already-installed"
+  exit 0
+fi
+
+if /usr/bin/profiles install -type configuration -path "$profile" >"$log" 2>&1; then
+  echo "installed"
+  exit 0
+fi
+
+/usr/bin/open "$profile" >/dev/null 2>&1 || true
+if /usr/bin/grep -qi "no longer supports installs" "$log" 2>/dev/null; then
+  echo "manual-approval-required"
+else
+  echo "staged"
+fi
+exit 0

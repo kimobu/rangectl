@@ -1,0 +1,6 @@
+---
+macos_network_service: Ethernet
+macos_dns_servers:
+  - "{{ grey_ip_range }}.53"
+  - "{{ ip_range }}.1"
+macos_search_domains: []

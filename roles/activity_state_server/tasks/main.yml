@@ -1,0 +1,92 @@
+---
+- name: Validate activity state server token
+  ansible.builtin.assert:
+    that:
+      - activity_state_server_token is defined
+      - activity_state_server_token | length >= 32
+    fail_msg: activity_state_server_token must contain at least 32 characters
+    quiet: true
+
+- name: Create activity state server group
+  ansible.builtin.group:
+    name: "{{ activity_state_server_group }}"
+    system: true
+
+- name: Create activity state server user
+  ansible.builtin.user:
+    name: "{{ activity_state_server_user }}"
+    group: "{{ activity_state_server_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ activity_state_server_data_dir }}"
+    create_home: false
+
+- name: Create activity state server directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ activity_state_server_install_dir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ activity_state_server_data_dir }}"
+      owner: "{{ activity_state_server_user }}"
+      group: "{{ activity_state_server_group }}"
+      mode: "0750"
+    - path: "{{ activity_state_server_config_dir }}"
+      owner: root
+      group: "{{ activity_state_server_group }}"
+      mode: "0750"
+
+- name: Copy rangectl activity state server source
+  ansible.builtin.copy:
+    src: "{{ activity_state_server_source_root | default(playbook_dir ~ '/../../') }}rangectl_lib"
+    dest: "{{ activity_state_server_install_dir }}/"
+    owner: root
+    group: root
+    mode: preserve
+  notify: Restart rangectl activity state server
+
+- name: Install activity state server token
+  ansible.builtin.copy:
+    dest: "{{ activity_state_server_config_dir }}/token"
+    content: "{{ activity_state_server_token }}\n"
+    owner: root
+    group: "{{ activity_state_server_group }}"
+    mode: "0640"
+  no_log: true
+  notify: Restart rangectl activity state server
+
+- name: Install activity state server service
+  ansible.builtin.template:
+    src: rangectl-activity-state-server.service.j2
+    dest: /etc/systemd/system/rangectl-activity-state-server.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart rangectl activity state server
+
+- name: Enable activity state server
+  ansible.builtin.systemd:
+    name: rangectl-activity-state-server.service
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending activity state server changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify activity state server health
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ activity_state_server_port }}/healthz"
+    return_content: true
+    status_code: 200
+  register: activity_state_server_health
+  retries: 10
+  delay: 1
+  until: activity_state_server_health.status == 200
+  changed_when: false

@@ -1,0 +1,4 @@
+---
+# Paths from older content packs that should be removed during migration.
+# Public defaults are empty; private packs can list their former helper files.
+macos_domain_join_legacy_onboarding_paths: []

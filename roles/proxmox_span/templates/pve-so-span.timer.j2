@@ -1,0 +1,11 @@
+[Unit]
+Description=Reapply Security Onion Proxmox tc span
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec={{ proxmox_span_interval }}
+AccuracySec=5s
+Unit=pve-so-span.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,29 @@
+{
+  "description": "Normalize Kubernetes API audit JSON to ECS",
+  "version": 2,
+  "processors": [
+    {"date": {"field": "requestReceivedTimestamp", "target_field": "@timestamp", "formats": ["ISO8601"], "ignore_failure": true}},
+    {"rename": {"field": "verb", "target_field": "event.action", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "auditID", "target_field": "event.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "user.username", "target_field": "user.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "user.uid", "target_field": "user.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "userAgent", "target_field": "user_agent.original", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "sourceIPs", "target_field": "source.ip", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "objectRef.namespace", "target_field": "orchestrator.namespace", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "objectRef.resource", "target_field": "orchestrator.resource.type", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "objectRef.name", "target_field": "orchestrator.resource.name", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "objectRef.uid", "target_field": "orchestrator.resource.id", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "responseStatus.code", "target_field": "http.response.status_code", "ignore_missing": true, "override": false}},
+    {"rename": {"field": "requestURI", "target_field": "url.original", "ignore_missing": true, "override": false}},
+    {"script": {"lang": "painless", "source": "def action = ctx.event?.action; if (action == 'create') ctx.event.type = ['creation']; else if (action == 'update' || action == 'patch') ctx.event.type = ['change']; else if (action == 'delete' || action == 'deletecollection') ctx.event.type = ['deletion']; else if (action == 'get' || action == 'list' || action == 'watch') ctx.event.type = ['access']; else ctx.event.type = ['info']; ctx.event.category = ['api']; def decision = ctx.annotations == null ? null : ctx.annotations['authorization.k8s.io/decision']; if (decision != null) { ctx.event.outcome = decision == 'allow' ? 'success' : 'failure'; ctx.event.type.add(decision == 'allow' ? 'allowed' : 'denied'); } def reason = ctx.annotations == null ? null : ctx.annotations['authorization.k8s.io/reason']; if (reason != null && reason.length() > 0) ctx.event.reason = reason; def extra = ctx.user == null ? null : ctx.user.extra; if (extra != null) { def pod = extra['authentication.kubernetes.io/pod-name']; def uid = extra['authentication.kubernetes.io/pod-uid']; if (pod != null || uid != null) { if (ctx.kubernetes == null) ctx.kubernetes = new HashMap(); if (ctx.kubernetes.audit == null) ctx.kubernetes.audit = new HashMap(); if (ctx.kubernetes.audit.actor == null) ctx.kubernetes.audit.actor = new HashMap(); if (ctx.kubernetes.audit.actor.pod == null) ctx.kubernetes.audit.actor.pod = new HashMap(); if (pod != null && !pod.isEmpty()) ctx.kubernetes.audit.actor.pod.name = pod[0]; if (uid != null && !uid.isEmpty()) ctx.kubernetes.audit.actor.pod.uid = uid[0]; } }"}},
+    {"set": {"field": "event.kind", "value": "event"}},
+    {"set": {"field": "event.module", "value": "kubernetes"}},
+    {"set": {"field": "event.dataset", "value": "kubernetes.audit"}},
+    {"set": {"field": "orchestrator.type", "value": "kubernetes"}},
+    {"script": {"lang": "painless", "source": "if (ctx.related == null) ctx.related = new HashMap(); if (ctx.user?.name != null) ctx.related.user = [ctx.user.name]; if (ctx.source?.ip != null) ctx.related.ip = ctx.source.ip instanceof List ? ctx.source.ip : [ctx.source.ip];"}}
+  ],
+  "on_failure": [
+    {"set": {"field": "event.kind", "value": "pipeline_error"}},
+    {"set": {"field": "error.message", "value": "Kubernetes audit pipeline failure in {{{ _ingest.on_failure_processor_type }}}: {{{ _ingest.on_failure_message }}}"}}
+  ]
+}

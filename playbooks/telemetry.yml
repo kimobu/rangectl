@@ -1,0 +1,4 @@
+---
+- import_playbook: securityonion-proxmox.yml
+- import_playbook: sysmon.yml
+- import_playbook: reboot.yml

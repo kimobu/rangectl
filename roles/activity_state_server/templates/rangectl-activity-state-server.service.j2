@@ -1,0 +1,21 @@
+[Unit]
+Description=rangectl activity scenario state server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ activity_state_server_user }}
+Group={{ activity_state_server_group }}
+Environment=PYTHONPATH={{ activity_state_server_install_dir }}
+ExecStart=/usr/bin/python3 -m rangectl_lib.activity.state_server --listen {{ activity_state_server_listen }} --port {{ activity_state_server_port }} --root {{ activity_state_server_data_dir }} --token-file {{ activity_state_server_config_dir }}/token
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={{ activity_state_server_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

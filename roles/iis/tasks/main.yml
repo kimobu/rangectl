@@ -1,0 +1,84 @@
+- name: Enable update service
+  ansible.windows.win_service:
+    name: Windows Update
+    state: started
+    start_mode: auto
+
+- name: Install IIS Management Features
+  win_feature:
+    name: Web-Mgmt-Tools, 
+          Web-Mgmt-Console, 
+          Web-Scripting-Tools, 
+          Web-Mgmt-Service
+    state: present
+
+- name: Add SYSTEM allow rights to machine keys (required for installation of IIS 6 components)
+  win_acl:
+    path: C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\
+    user: SYSTEM
+    rights: FullControl
+    type: allow
+    state: present
+    inherit: ContainerInherit, ObjectInherit
+    propagation: 'InheritOnly'
+
+- name: Install IIS 6 Compatibility Features 
+  win_feature:
+    name: Web-Mgmt-Compat,
+          Web-Metabase,
+          Web-Lgcy-Mgmt-Console,
+          Web-Lgcy-Scripting,
+          Web-WMI
+    state: present
+
+- name: Check IIS broad feature footprint
+  ansible.windows.win_shell: |
+    $features = @(
+      'Web-Server',
+      'Web-Dyn-Compression',
+      'Web-Windows-Auth',
+      'Web-Asp-Net45',
+      'Web-Ftp-Ext'
+    )
+    $missing = @(
+      Get-WindowsFeature -Name $features |
+        Where-Object { $_.InstallState -ne 'Installed' } |
+        Select-Object -ExpandProperty Name
+    )
+    if ($missing.Count -gt 0) {
+      Write-Output "missing=$($missing -join ',')"
+    } else {
+      Write-Output "missing="
+    }
+  register: iis_broad_feature_state
+  changed_when: false
+
+- name: Install IIS Web-Server with sub features and management tools
+  win_feature:
+    name: Web-Server
+    state: present
+    include_sub_features: yes
+    include_management_tools: yes
+  register: win_feature
+  when: (iis_broad_feature_state.stdout | trim) != 'missing='
+
+- name: Create directory
+  win_file:
+    path: C:\\inetpub
+    state: directory
+
+- name: Create directory
+  win_file:
+    path: C:\\inetpub\\wwwroot
+    state: directory
+
+- name: default-website-index
+  win_copy:
+    src: files/index.html
+    dest: "C:\\inetpub\\wwwroot\\index.html"
+
+- name: Reboot if installing Web-Server feature requires it
+  ansible.windows.win_reboot:
+  when:
+    - win_feature is defined
+    - win_feature.reboot_required | default(false)

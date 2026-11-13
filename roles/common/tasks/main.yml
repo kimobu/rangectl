@@ -1,0 +1,74 @@
+- name: "Force a DNS on the adapter {{nat_adapter}}"
+  ansible.windows.win_dns_client:
+    adapter_names: "{{nat_adapter}}"
+    dns_servers: 
+      - "{{hostvars[dns_domain].ansible_host}}"
+      - "{{dns_server}}"
+  when: force_dns_server == "yes"
+
+- name: Windows | Disable IPv6 (requires reboot)
+  ansible.windows.win_regedit:
+    path: HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters
+    name: DisabledComponents
+    data: 255
+    type: dword
+    state: present
+  register: ipv6_disable
+
+- name: Windows | Reboot after IPv6 disable
+  ansible.windows.win_reboot:
+    reboot_timeout: 1800
+  when: ipv6_disable.changed
+
+- name: Upgrade module PowerShellGet to fix accept license issue on last windows ansible version
+  win_shell: |
+    if (-not (Get-Command Install-PackageProvider -ErrorAction SilentlyContinue)) {
+      Write-Host "Skipping PowerShellGet bootstrap: Install-PackageProvider not available on this PowerShell version ($($PSVersionTable.PSVersion))."
+      exit 0
+    }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Install-PackageProvider -Name NuGet -Force -ErrorAction SilentlyContinue
+    if (Get-Command Install-Module -ErrorAction SilentlyContinue) {
+      Install-Module PowerShellGet -Force -ErrorAction SilentlyContinue
+    } else {
+      Write-Host "Install-Module not available on this host."
+    }
+
+- name: Windows | Ensure ComputerManagementDsc module is installed (no AcceptLicense)
+  win_shell: |
+    $installed = Get-Module -ListAvailable -Name ComputerManagementDsc
+    if (-not $installed) {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Install-Module -Name ComputerManagementDsc -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers
+      Write-Host "installed"
+    }
+  register: computermgmt_install
+  changed_when: "'installed' in computermgmt_install.stdout"
+
+- name: Windows | Enable Remote Desktop (allow RDP connections)
+  win_shell: |
+    Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+    Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+- name: Windows | Ensure xNetworking module is installed (no AcceptLicense)
+  win_shell: |
+    $installed = Get-Module -ListAvailable -Name xNetworking
+    if (-not $installed) {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Install-Module -Name xNetworking -Force -AllowClobber -SkipPublisherCheck -Scope AllUsers
+      Write-Host "installed"
+    }
+  register: xnetworking_install
+  changed_when: "'installed' in xnetworking_install.stdout"
+
+- name: Firewall | Allow RDP through Firewall (TCP 3389 inbound)
+  win_shell: |
+    netsh advfirewall firewall set rule group="remote desktop" new enable=Yes
+
+- name: Add a network static route
+  community.windows.win_route:
+    destination: "{{route_network}}"
+    gateway: "{{route_gateway}}"
+    metric: 1
+    state: present
+  when: add_route == "yes"

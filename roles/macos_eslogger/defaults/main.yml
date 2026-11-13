@@ -1,0 +1,17 @@
+---
+macos_eslogger_log_path: /var/log/eslogger.json
+macos_eslogger_error_log_path: /var/log/eslogger.err
+macos_eslogger_label: dev.rangectl.eslogger
+macos_eslogger_rotate_label: dev.rangectl.eslogger.rotate
+macos_eslogger_rotate_script: /usr/local/sbin/rangectl-eslogger-rotate
+macos_eslogger_rotate_interval_seconds: 300
+macos_eslogger_max_bytes: 268435456
+macos_eslogger_events:
+  - exec
+  - create
+  - rename
+  - unlink
+  - authentication
+  - openssh_login
+  - openssh_logout
+  - remote_thread_create

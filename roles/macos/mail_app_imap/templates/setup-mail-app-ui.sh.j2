@@ -1,0 +1,456 @@
+#!/bin/sh
+set -eu
+
+log="${HOME}/Library/Logs/rangectl-mail-ui-{{ inventory_hostname }}.log"
+mkdir -p "${HOME}/Library/Logs"
+
+/usr/bin/perl -e 'alarm 150; exec @ARGV' /usr/bin/osascript >"$log" 2>&1 <<'OSA'
+property accountName : "{{ mail_app_imap_account_name | default(mail_app_imap_display_name | default(inventory_hostname)) }}"
+property displayName : "{{ mail_app_imap_display_name | default(inventory_hostname) }}"
+property emailAddress : "{{ mail_app_imap_email }}"
+property accountPassword : system attribute "RANGECTL_MAIL_PASSWORD"
+property incomingHost : "{{ mail_app_imap_setup_host | default(mail_app_imap_incoming_host) }}"
+property outgoingHost : "{{ mail_app_imap_setup_host | default(mail_app_imap_outgoing_host) }}"
+
+on uiType(fieldRef, typedText)
+  tell application "System Events"
+    try
+      set value of fieldRef to typedText
+      delay 0.2
+      return true
+    end try
+    try
+      set focused of fieldRef to true
+      delay 0.2
+      keystroke "a" using command down
+      delay 0.1
+      keystroke typedText
+      delay 0.2
+      return true
+    end try
+  end tell
+  return false
+end uiType
+
+on clickElementCenter(elementRef)
+  tell application "System Events"
+    try
+      set elementPosition to position of elementRef
+      set elementSize to size of elementRef
+      set clickX to ((item 1 of elementPosition) + ((item 1 of elementSize) / 2)) as integer
+      set clickY to ((item 2 of elementPosition) + ((item 2 of elementSize) / 2)) as integer
+      set swiftSource to "import CoreGraphics; import Foundation; let p = CGPoint(x: " & clickX & ", y: " & clickY & "); CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap); Thread.sleep(forTimeInterval: 0.1); CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap); Thread.sleep(forTimeInterval: 0.1); CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: p, mouseButton: .left)!.post(tap: .cghidEventTap)"
+      do shell script "/usr/bin/swift -e " & quoted form of swiftSource
+      return true
+    end try
+    try
+      click at {clickX, clickY}
+      return true
+    end try
+  end tell
+  return false
+end clickElementCenter
+
+on allTextFields(rootRef)
+  set fieldList to {}
+  tell application "System Events"
+    try
+      repeat with fieldRef in text fields of rootRef
+        set end of fieldList to fieldRef
+      end repeat
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        set childFields to my allTextFields(childRef)
+        repeat with childField in childFields
+          set end of fieldList to childField
+        end repeat
+      end repeat
+    end try
+  end tell
+  return fieldList
+end allTextFields
+
+on textFieldNamed(rootRef, fieldName)
+  tell application "System Events"
+    try
+      repeat with fieldRef in text fields of rootRef
+        try
+          if (name of fieldRef as text) is fieldName then return fieldRef
+        end try
+      end repeat
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        set foundField to my textFieldNamed(childRef, fieldName)
+        if foundField is not missing value then return foundField
+      end repeat
+    end try
+  end tell
+  return missing value
+end textFieldNamed
+
+on deepestSheet(rootRef)
+  set deepestRef to rootRef
+  tell application "System Events"
+    try
+      repeat with childSheet in sheets of rootRef
+        set deepestRef to my deepestSheet(childSheet)
+      end repeat
+    end try
+  end tell
+  return deepestRef
+end deepestSheet
+
+on visibleSheet()
+  tell application "System Events"
+    tell process "Mail"
+      repeat with winRef in windows
+        try
+          if exists sheet 1 of winRef then return my deepestSheet(sheet 1 of winRef)
+        end try
+      end repeat
+    end tell
+  end tell
+  return missing value
+end visibleSheet
+
+on allStaticText(rootRef)
+  set labelsText to ""
+  tell application "System Events"
+    try
+      repeat with textRef in static texts of rootRef
+        try
+          set labelsText to labelsText & " " & (value of textRef as text)
+        end try
+        try
+          set labelsText to labelsText & " " & (name of textRef as text)
+        end try
+      end repeat
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        set labelsText to labelsText & " " & my allStaticText(childRef)
+      end repeat
+    end try
+  end tell
+  return labelsText
+end allStaticText
+
+on clickNamedButton(rootRef, buttonNames)
+  tell application "System Events"
+    repeat with buttonName in buttonNames
+      try
+        if exists button (buttonName as text) of rootRef then
+          if enabled of button (buttonName as text) of rootRef then
+            click button (buttonName as text) of rootRef
+            return true
+          end if
+        end if
+      end try
+    end repeat
+    try
+      repeat with childRef in UI elements of rootRef
+        if my clickNamedButton(childRef, buttonNames) then return true
+      end repeat
+    end try
+  end tell
+  return false
+end clickNamedButton
+
+on clickRightmostEnabledButton(rootRef)
+  set bestButton to missing value
+  set bestX to -1
+  tell application "System Events"
+    try
+      repeat with buttonRef in buttons of rootRef
+        try
+          if enabled of buttonRef then
+            set buttonPos to position of buttonRef
+            set buttonX to item 1 of buttonPos
+            if buttonX > bestX then
+              set bestX to buttonX
+              set bestButton to buttonRef
+            end if
+          end if
+        end try
+      end repeat
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        try
+          set childButton to my rightmostEnabledButton(childRef)
+          if childButton is not missing value then
+            set childPos to position of childButton
+            set childX to item 1 of childPos
+            if childX > bestX then
+              set bestX to childX
+              set bestButton to childButton
+            end if
+          end if
+        end try
+      end repeat
+    end try
+    if bestButton is not missing value then
+      try
+        click bestButton
+      on error
+        my clickElementCenter(bestButton)
+      end try
+      return true
+    end if
+  end tell
+  return false
+end clickRightmostEnabledButton
+
+on rightmostEnabledButton(rootRef)
+  set bestButton to missing value
+  set bestX to -1
+  tell application "System Events"
+    try
+      repeat with buttonRef in buttons of rootRef
+        try
+          if enabled of buttonRef then
+            set buttonPos to position of buttonRef
+            set buttonX to item 1 of buttonPos
+            if buttonX > bestX then
+              set bestX to buttonX
+              set bestButton to buttonRef
+            end if
+          end if
+        end try
+      end repeat
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        try
+          set childButton to my rightmostEnabledButton(childRef)
+          if childButton is not missing value then
+            set childPos to position of childButton
+            set childX to item 1 of childPos
+            if childX > bestX then
+              set bestX to childX
+              set bestButton to childButton
+            end if
+          end if
+        end try
+      end repeat
+    end try
+  end tell
+  return bestButton
+end rightmostEnabledButton
+
+on clickChooseFromList(rootRef)
+  tell application "System Events"
+    try
+      if role of rootRef as text is "AXLink" then
+        my clickElementCenter(rootRef)
+        return true
+      end if
+    end try
+    try
+      repeat with childRef in UI elements of rootRef
+        if my clickChooseFromList(childRef) then return true
+      end repeat
+    end try
+  end tell
+  return false
+end clickChooseFromList
+
+on chooseProviderListIfPresent()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  set labelsText to my allStaticText(sheetRef)
+  if labelsText contains "Enter your email address" and labelsText contains "choose from a list" then
+    if my clickChooseFromList(sheetRef) then return true
+  end if
+  return false
+end chooseProviderListIfPresent
+
+on chooseOtherAccount()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  set labelsText to my allStaticText(sheetRef)
+  if labelsText does not contain "Choose a Mail account provider" and labelsText does not contain "Choose your provider" then return false
+  if my clickNamedButton(sheetRef, {"Other Mail Account"}) then return true
+  tell application "System Events"
+    try
+      repeat with rowRef in rows of table 1 of scroll area 1 of sheetRef
+        set rowText to my allStaticText(rowRef)
+        try
+          set rowRadios to radio buttons of UI element 1 of rowRef
+          repeat with radioRef in rowRadios
+            try
+              if (name of radioRef as text) contains "Other Mail Account" then
+                click radioRef
+                delay 0.5
+                my clickNamedButton(sheetRef, {"Continue"})
+                return true
+              end if
+            end try
+          end repeat
+          if rowText contains "Other Mail Account" then
+            click item 1 of rowRadios
+            delay 0.5
+            my clickNamedButton(sheetRef, {"Continue"})
+            return true
+          end if
+        end try
+      end repeat
+    end try
+  end tell
+  return false
+end chooseOtherAccount
+
+on fillNamedTextField(rootRef, fieldName, fieldValue)
+  set fieldRef to my textFieldNamed(rootRef, fieldName)
+  if fieldRef is not missing value then
+    my uiType(fieldRef, fieldValue)
+    return true
+  end if
+  return false
+end fillNamedTextField
+
+on fillIndexedTextField(rootRef, fieldIndex, fieldValue)
+  set fieldsRef to my allTextFields(rootRef)
+  if (count of fieldsRef) >= fieldIndex then
+    my uiType(item fieldIndex of fieldsRef, fieldValue)
+    return true
+  end if
+  return false
+end fillIndexedTextField
+
+on fillBasicAccount()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  set labelsText to my allStaticText(sheetRef)
+  set basicFields to my allTextFields(sheetRef)
+  try
+    if (count of basicFields) is 1 then
+      my uiType(item 1 of basicFields, emailAddress)
+      delay 0.5
+      tell application "System Events" to key code 36
+      return true
+    end if
+  end try
+  if labelsText contains "Enter your email address" and labelsText does not contain "Choose a Mail account provider" then
+    my fillIndexedTextField(sheetRef, 1, emailAddress)
+    delay 0.5
+    return my clickRightmostEnabledButton(sheetRef)
+  end if
+  if labelsText does not contain "Add a Mail account" then return false
+  my fillNamedTextField(sheetRef, "Name:", displayName)
+  my fillNamedTextField(sheetRef, "Email Address:", emailAddress)
+  my fillNamedTextField(sheetRef, "Password:", accountPassword)
+  my fillIndexedTextField(sheetRef, 1, displayName)
+  my fillIndexedTextField(sheetRef, 2, emailAddress)
+  my fillIndexedTextField(sheetRef, 3, accountPassword)
+  delay 1
+  return my clickNamedButton(sheetRef, {"Sign In", "Next", "Continue"})
+end fillBasicAccount
+
+on fillManualAccount()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  set labelsText to my allStaticText(sheetRef)
+  if labelsText does not contain "Incoming Mail Server" and labelsText does not contain "Unable to verify" then return false
+  my fillNamedTextField(sheetRef, "Email Address:", emailAddress)
+  my fillNamedTextField(sheetRef, "User Name:", emailAddress)
+  my fillNamedTextField(sheetRef, "Incoming Mail Server:", incomingHost)
+  my fillNamedTextField(sheetRef, "Outgoing Mail Server:", outgoingHost)
+  my fillNamedTextField(sheetRef, "Password:", accountPassword)
+  if labelsText contains "Unable to verify" then
+    set fieldsRef to my allTextFields(sheetRef)
+    tell application "System Events"
+      try
+        set focused of item (count of fieldsRef) of fieldsRef to true
+        key code 124
+        keystroke " "
+        key code 51
+      end try
+    end tell
+  end if
+  delay 1
+  return my clickNamedButton(sheetRef, {"Sign In", "Next", "Continue"})
+end fillManualAccount
+
+on finishAppsSheet()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  return my clickNamedButton(sheetRef, {"Done"})
+end finishAppsSheet
+
+on confirmInsecurePasswordIfPresent()
+  set sheetRef to my visibleSheet()
+  if sheetRef is missing value then return false
+  set labelsText to my allStaticText(sheetRef)
+  if labelsText contains "password could not be sent securely" or labelsText contains "could not be sent securely" then
+    return my clickNamedButton(sheetRef, {"Continue", "Connect", "Sign In", "Next", "OK"})
+  end if
+  return false
+end confirmInsecurePasswordIfPresent
+
+on openAddAccountIfNeeded()
+  tell application "Mail"
+    if (count of every account) is not 0 then return false
+    activate
+  end tell
+  delay 0.5
+  tell application "System Events"
+    tell process "Mail"
+      try
+        click menu item "Add Account…" of menu 1 of menu bar item "Mail" of menu bar 1
+        return true
+      end try
+    end tell
+  end tell
+  return false
+end openAddAccountIfNeeded
+
+tell application "Mail" to activate
+delay 3
+
+set deadline to (current date) + 120
+repeat while (current date) < deadline
+  try
+    tell application "Mail"
+      repeat with accountRef in every account
+        try
+          if (user name of accountRef as text) is emailAddress or emailAddress is in (email addresses of accountRef) then
+            try
+              check for new mail for accountRef
+            end try
+            return "ready"
+          end if
+        end try
+      end repeat
+    end tell
+  end try
+  if my confirmInsecurePasswordIfPresent() then
+    delay 5
+  else if my finishAppsSheet() then
+    delay 4
+  else if my chooseProviderListIfPresent() then
+    delay 1
+  else if my chooseOtherAccount() then
+    delay 2
+  else if my fillBasicAccount() then
+    delay 8
+  else if my fillManualAccount() then
+    delay 10
+  else if my openAddAccountIfNeeded() then
+    delay 3
+  else
+    delay 1
+  end if
+end repeat
+
+return "not-configured"
+OSA
+
+if /usr/bin/grep -Eq '^(configured|ready)$' "$log"; then
+  /bin/cat "$log"
+else
+  /bin/cat "$log"
+  exit 1
+fi

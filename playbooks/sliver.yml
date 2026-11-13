@@ -1,0 +1,5 @@
+- name: Configure sliver host
+  hosts: sliver
+  become: true
+  roles:
+    - { role: 'sliver/install', tags: 'install' }

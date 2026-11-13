@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+BASE="{{ activity_agent_install_dir | default('/opt/rangectl-activity') }}"
+CONFIG="$BASE/activity.json"
+PYTHON="{{ activity_agent_python | default(ansible_python_interpreter | default('/usr/bin/python3')) }}"
+
+{% if activity_agent_remote_config_url is defined and activity_agent_remote_config_url %}
+export RANGECTL_ACTIVITY_CONFIG_URL="{{ activity_agent_remote_config_url }}"
+export RANGECTL_ACTIVITY_CONFIG_TOKEN="{{ activity_agent_scenario_state_token }}"
+{% if activity_agent_legacy_install_dirs %}
+export RANGECTL_ACTIVITY_LEGACY_STATE_DIRS="{% for path in activity_agent_legacy_install_dirs %}{{ path }}/state{% if not loop.last %}:{% endif %}{% endfor %}"
+{% endif %}
+{% else %}
+if [ ! -f "$CONFIG" ]; then
+  echo "activity config not found: $CONFIG" >&2
+  exit 1
+fi
+{% endif %}
+export PYTHONPATH="$BASE${PYTHONPATH:+:$PYTHONPATH}"
+export RANGECTL_ACTIVITY_STATE_DIR="$BASE/state"
+{% if activity_agent_scenario_state_url is defined and activity_agent_scenario_state_url %}
+export RANGECTL_SCENARIO_STATE_URL="{{ activity_agent_scenario_state_url }}"
+export RANGECTL_SCENARIO_STATE_TOKEN="{{ activity_agent_scenario_state_token }}"
+{% endif %}
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
+{% if activity_agent_remote_config_url is defined and activity_agent_remote_config_url %}
+exec "$PYTHON" -m rangectl_lib.activity.agent
+{% else %}
+exec "$PYTHON" -m rangectl_lib.activity.agent "$CONFIG"
+{% endif %}

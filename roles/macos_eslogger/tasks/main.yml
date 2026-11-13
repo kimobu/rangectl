@@ -1,0 +1,141 @@
+---
+- name: Check for Apple eslogger
+  ansible.builtin.stat:
+    path: /usr/bin/eslogger
+  register: macos_eslogger_stat
+
+- name: List supported eslogger events
+  become: true
+  ansible.builtin.command: /usr/bin/eslogger --list-events
+  register: macos_eslogger_event_list
+  changed_when: false
+  when: macos_eslogger_stat.stat.exists
+
+- name: Select supported eslogger events
+  ansible.builtin.set_fact:
+    macos_eslogger_supported_events: "{{ macos_eslogger_events | intersect(macos_eslogger_event_list.stdout_lines | default([])) }}"
+  when: macos_eslogger_stat.stat.exists
+
+- name: Ensure eslogger output files exist
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch
+    owner: root
+    group: wheel
+    mode: '0644'
+  loop:
+    - "{{ macos_eslogger_log_path }}"
+    - "{{ macos_eslogger_error_log_path }}"
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Ensure eslogger rotate script directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ macos_eslogger_rotate_script | dirname }}"
+    state: directory
+    owner: root
+    group: wheel
+    mode: '0755'
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Install eslogger rotate script
+  become: true
+  ansible.builtin.template:
+    src: rangectl-eslogger-rotate.sh.j2
+    dest: "{{ macos_eslogger_rotate_script }}"
+    owner: root
+    group: wheel
+    mode: '0755'
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Install eslogger rotate LaunchDaemon
+  become: true
+  ansible.builtin.template:
+    src: dev.rangectl.eslogger.rotate.plist.j2
+    dest: "/Library/LaunchDaemons/{{ macos_eslogger_rotate_label }}.plist"
+    owner: root
+    group: wheel
+    mode: '0644'
+  register: macos_eslogger_rotate_plist
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Reload eslogger rotate LaunchDaemon after changes
+  become: true
+  ansible.builtin.shell: |
+    launchctl bootout system "/Library/LaunchDaemons/{{ macos_eslogger_rotate_label }}.plist" >/dev/null 2>&1 || true
+    launchctl bootstrap system "/Library/LaunchDaemons/{{ macos_eslogger_rotate_label }}.plist"
+  args:
+    executable: /bin/sh
+  when:
+    - macos_eslogger_rotate_plist.changed
+
+- name: Enforce eslogger log size cap immediately
+  become: true
+  ansible.builtin.command: "{{ macos_eslogger_rotate_script }}"
+  changed_when: false
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Install eslogger LaunchDaemon
+  become: true
+  ansible.builtin.template:
+    src: dev.rangectl.eslogger.plist.j2
+    dest: "/Library/LaunchDaemons/{{ macos_eslogger_label }}.plist"
+    owner: root
+    group: wheel
+    mode: '0644'
+  register: macos_eslogger_plist
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Reload eslogger LaunchDaemon after changes
+  become: true
+  ansible.builtin.shell: |
+    launchctl bootout system "/Library/LaunchDaemons/{{ macos_eslogger_label }}.plist" >/dev/null 2>&1 || true
+    launchctl bootstrap system "/Library/LaunchDaemons/{{ macos_eslogger_label }}.plist"
+  args:
+    executable: /bin/sh
+  when:
+    - macos_eslogger_plist.changed
+
+- name: Ensure eslogger LaunchDaemon is running
+  become: true
+  ansible.builtin.command: "launchctl kickstart -k system/{{ macos_eslogger_label }}"
+  changed_when: false
+  when:
+    - macos_eslogger_stat.stat.exists
+    - macos_eslogger_supported_events | length > 0
+
+- name: Remove old eslogger availability note marker
+  become: true
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl/profiles/20-eslogger-note.txt
+    state: absent
+
+- name: Ensure eslogger note directory exists
+  become: true
+  ansible.builtin.file:
+    path: /Library/Application Support/rangectl/profiles
+    state: directory
+    mode: '0755'
+
+- name: Stage eslogger availability note
+  become: true
+  ansible.builtin.copy:
+    dest: /Library/Application Support/rangectl/profiles/20-eslogger-note.txt
+    mode: '0644'
+    content: |
+      eslogger status: {% if macos_eslogger_stat.stat.exists %}managed by {{ macos_eslogger_label }}{% else %}not available on this macOS release{% endif %}.
+
+      Security Onion's mac-esf-logs Fleet input reads {{ macos_eslogger_log_path }}. macOS 13 and newer include /usr/bin/eslogger; older guests such as Monterey do not.

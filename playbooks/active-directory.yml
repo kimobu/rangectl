@@ -1,0 +1,13 @@
+---
+- import_playbook: ad-servers.yml
+- import_playbook: ad-parent_domain.yml
+- import_playbook: ad-child_domain.yml
+- import_playbook: wait5m.yml
+- import_playbook: ad-members.yml
+- import_playbook: ad-trusts.yml
+- import_playbook: ad-data.yml
+- import_playbook: ad-gmsa.yml
+- import_playbook: laps.yml
+- import_playbook: ad-relations.yml
+- import_playbook: adcs.yml
+- import_playbook: ad-acl.yml

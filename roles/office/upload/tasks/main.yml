@@ -1,0 +1,52 @@
+- name: Ensure directory structure for share exists
+  win_file:
+    path: C:\share
+    state: directory
+
+- name: Ensure public share exists
+  win_share:
+    name: Corporate Share
+    description: Basic share for all domain users
+    path: C:\share
+    list: yes
+    full: Everyone
+
+- name: Ensure directory structure for IT share exists
+  win_file:
+    path: C:\share\IT
+    state: directory
+
+- name: Ensure directory structure for HR share exists
+  win_file:
+    path: C:\share\HR
+    state: directory
+
+- name: Ensure directory structure for human share exists
+  win_file:
+    path: C:\share\human
+    state: directory
+
+- name: Upload files
+  vars:
+    domain: "{{lab.hosts[dict_key].domain}}"
+    domain_password: "{{lab.domains[domain].domain_password}}"
+    dc: "{{lab.domains[domain].dc}}"
+    dc_hostname: "{{lab.hosts[dc].hostname}}"
+    ansible_become: true
+    ansible_become_method: runas
+    ansible_become_user: "{{domain}}\\Administrator"
+    ansible_become_password: "{{domain_password}}"
+  win_copy:
+    src: "{{ office_files_zip_src | default(role_path ~ '/../../../artifacts/office/files.zip') }}"
+    dest: "c:\\share\\files.zip"
+
+- name: Check if office share artifacts are already extracted
+  ansible.windows.win_stat:
+    path: C:\share\IT\office.exe
+  register: office_share_artifacts
+
+- name: Unzip files
+  community.windows.win_unzip:
+    src: C:\share\files.zip
+    dest: C:\share
+  when: (office_upload_force_extract | default(false) | bool) or not office_share_artifacts.stat.exists

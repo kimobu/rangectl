@@ -1,0 +1,21 @@
+{
+  "template": {
+    "mappings": {
+      "properties": {
+        "error": {"properties": {"message": {"type": "match_only_text"}, "type": {"type": "keyword"}}},
+        "esf": {
+          "properties": {
+            "event_type": {"type": "keyword"},
+            "version": {"type": "keyword"},
+            "process": {"properties": {"executable": {"type": "object", "enabled": false}}}
+          }
+        },
+        "file": {"properties": {"atime": {"type": "date_nanos"}, "mtime": {"type": "date_nanos"}}},
+        "message": {"type": "match_only_text"},
+        "process": {"properties": {"executable": {"type": "keyword"}}},
+        "url": {"properties": {"original": {"type": "wildcard"}}},
+        "user": {"properties": {"id": {"type": "keyword"}}}
+      }
+    }
+  }
+}

@@ -1,0 +1,33 @@
+#!/bin/bash
+set -eu
+
+target_user="{{ macos_onboarding_user }}"
+logged_in_user="$(id -un)"
+profile_dir="/Library/Application Support/rangectl/profiles"
+state_dir="$HOME/Library/Application Support/rangectl"
+
+if [ "$logged_in_user" != "$target_user" ]; then
+  exit 0
+fi
+
+mkdir -p "$state_dir"
+
+for profile in "$profile_dir"/*.mobileconfig; do
+  [ -e "$profile" ] || continue
+  marker="$state_dir/$(basename "$profile").installed"
+  if [ -f "$marker" ]; then
+    continue
+  fi
+
+  if /usr/bin/profiles install -type configuration -path "$profile" >/dev/null 2>&1; then
+    touch "$marker"
+    continue
+  fi
+
+  if /usr/bin/profiles -I -F "$profile" >/dev/null 2>&1; then
+    touch "$marker"
+    continue
+  fi
+
+  /usr/bin/open "$profile" >/dev/null 2>&1 || true
+done

@@ -1,0 +1,18 @@
+[project]
+name = "rangectl"
+version = "0.1.0"
+description = "Discrete-command orchestration for red-team lab ranges."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/kimobu/rangectl"
+Repository = "https://github.com/kimobu/rangectl"
+Issues = "https://github.com/kimobu/rangectl/issues"
+
+[tool.uv]
+package = false

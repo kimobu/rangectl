@@ -1,0 +1,6 @@
+smtp_submitter_host: ""
+smtp_submitter_port: 25
+smtp_submitter_messages: []
+smtp_submitter_binary_path: /usr/local/sbin/rangectl-smtp-submit
+smtp_submitter_config_dir: /etc/rangectl-smtp/messages
+smtp_submitter_service_prefix: rangectl-smtp

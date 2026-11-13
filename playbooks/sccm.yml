@@ -1,0 +1,11 @@
+---
+- import_playbook: sccm-install.yml
+- import_playbook: wait5m.yml
+- import_playbook: wait5m.yml
+- import_playbook: reboot.yml
+- import_playbook: wait5m.yml
+- import_playbook: dhcp.yml
+- import_playbook: sccm-config.yml
+- import_playbook: sccm-pxe.yml
+- import_playbook: sccm-client.yml
+- import_playbook: sccm-cross-domain-client.yml

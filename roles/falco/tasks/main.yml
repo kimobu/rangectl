@@ -1,0 +1,218 @@
+---
+- name: Wait for MicroK8s to become ready
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - status
+      - --wait-ready
+  changed_when: false
+
+- name: Check local telemetry storage capacity
+  ansible.builtin.assert:
+    that:
+      - ansible_mounts | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int >= falco_minimum_free_mb * 1024 * 1024
+    fail_msg: "Falco requires at least {{ falco_minimum_free_mb }} MB free on the root filesystem."
+
+- name: Create Kubernetes audit log directory
+  ansible.builtin.file:
+    path: "{{ falco_audit_log_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Install Kubernetes audit policy
+  ansible.builtin.template:
+    src: audit-policy.yml.j2
+    dest: /var/snap/microk8s/current/args/audit-policy.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  register: falco_audit_policy
+
+- name: Enable bounded Kubernetes API audit logging
+  ansible.builtin.lineinfile:
+    path: /var/snap/microk8s/current/args/kube-apiserver
+    regexp: "^{{ item.key | regex_escape }}(?:=|$)"
+    line: "{{ item.key }}={{ item.value }}"
+  loop:
+    - { key: '--audit-policy-file', value: '${SNAP_DATA}/args/audit-policy.yaml' }
+    - { key: '--audit-log-path', value: "{{ falco_audit_log_path }}" }
+    - { key: '--audit-log-maxage', value: "{{ falco_audit_log_max_age_days }}" }
+    - { key: '--audit-log-maxbackup', value: "{{ falco_audit_log_max_backups }}" }
+    - { key: '--audit-log-maxsize', value: "{{ falco_audit_log_max_size_mb }}" }
+  register: falco_audit_args
+
+- name: Restart MicroK8s after audit configuration changes
+  ansible.builtin.systemd:
+    name: snap.microk8s.daemon-kubelite
+    state: restarted
+  when: falco_audit_policy.changed or falco_audit_args.changed
+
+- name: Wait for MicroK8s after enabling audit logging
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - status
+      - --wait-ready
+  changed_when: false
+  when: falco_audit_policy.changed or falco_audit_args.changed
+
+- name: Create Falco host event log
+  ansible.builtin.file:
+    path: "{{ falco_log_path }}"
+    state: touch
+    owner: root
+    group: adm
+    mode: '0640'
+    modification_time: preserve
+    access_time: preserve
+
+- name: Install Falco log rotation policy
+  ansible.builtin.template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/rangectl-falco
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Create Falco configuration directory
+  ansible.builtin.file:
+    path: /etc/rangectl/falco
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Render Falco Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /etc/rangectl/falco/values.yml
+    owner: root
+    group: root
+    mode: '0644'
+  register: falco_values
+
+- name: Cache pinned Falco chart on controller
+  ansible.builtin.get_url:
+    url: "{{ falco_chart_url }}"
+    dest: "{{ falco_chart_cache_path }}"
+    checksum: "sha256:{{ falco_chart_sha256 }}"
+    mode: '0644'
+  delegate_to: localhost
+  become: false
+
+- name: Copy pinned Falco chart to Kubernetes host
+  ansible.builtin.copy:
+    src: "{{ falco_chart_cache_path }}"
+    dest: "{{ falco_chart_remote_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Render Falco Kubernetes manifest with Helm
+  ansible.builtin.shell: >-
+    /snap/bin/microk8s helm3 template {{ falco_release_name | quote }}
+    {{ falco_chart_remote_path | quote }}
+    --namespace {{ falco_namespace | quote }}
+    --values /etc/rangectl/falco/values.yml > {{ falco_manifest_path | quote }}
+  args:
+    executable: /bin/bash
+  changed_when: falco_values.changed
+
+- name: Create Falco namespace
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - create
+      - namespace
+      - "{{ falco_namespace }}"
+  register: falco_namespace_create
+  changed_when: "'created' in (falco_namespace_create.stdout | default(''))"
+  failed_when:
+    - falco_namespace_create.rc != 0
+    - "'AlreadyExists' not in (falco_namespace_create.stderr | default(''))"
+
+- name: Apply Falco Kubernetes manifest
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - apply
+      - --namespace
+      - "{{ falco_namespace }}"
+      - --filename
+      - "{{ falco_manifest_path }}"
+  register: falco_apply
+  changed_when: >-
+    ' created' in (falco_apply.stdout | default('')) or
+    ' configured' in (falco_apply.stdout | default(''))
+
+- name: Wait for Falco DaemonSet rollout
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - rollout
+      - status
+      - daemonset/{{ falco_release_name }}
+      - --namespace
+      - "{{ falco_namespace }}"
+      - --timeout=300s
+  changed_when: false
+
+- name: Wait for Falco event log
+  ansible.builtin.wait_for:
+    path: "{{ falco_log_path }}"
+    state: present
+    timeout: 120
+
+- name: Start Falco smoke-test container
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - run
+      - rangectl-falco-smoke-test
+      - --image=busybox:1.36
+      - --restart=Never
+      - --command
+      - --
+      - sh
+      - -c
+      - sleep 3
+  register: falco_smoke_test
+  changed_when: "'created' in (falco_smoke_test.stdout | default(''))"
+  failed_when:
+    - falco_smoke_test.rc != 0
+    - "'AlreadyExists' not in (falco_smoke_test.stderr | default(''))"
+
+- name: Wait for Falco smoke-test container to finish
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - wait
+      - --for=jsonpath={.status.phase}=Succeeded
+      - pod/rangectl-falco-smoke-test
+      - --timeout=120s
+  changed_when: false
+
+- name: Remove Falco smoke-test container
+  ansible.builtin.command:
+    argv:
+      - /snap/bin/microk8s
+      - kubectl
+      - delete
+      - pod/rangectl-falco-smoke-test
+      - --ignore-not-found=true
+  changed_when: false
+
+- name: Verify Falco event log contains JSON records
+  ansible.builtin.shell: >-
+    set -o pipefail && tail -n 500 {{ falco_log_path | quote }} |
+    grep '"rule":"Rangectl shell started in container"' >/dev/null
+  args:
+    executable: /bin/bash
+  changed_when: false

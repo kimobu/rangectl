@@ -1,0 +1,195 @@
+---
+- name: Skip Mail.app IMAP profile when no mailbox is configured
+  ansible.builtin.meta: end_host
+  when: not mail_app_imap_enabled | bool or (mail_app_imap_email | default('') | length == 0)
+
+- name: Ensure Mail.app profile staging directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ mail_app_imap_profile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Stage Mail.app IMAP profile
+  become: true
+  ansible.builtin.template:
+    src: mail-app-imap.mobileconfig.j2
+    dest: "{{ mail_app_imap_profile_dir }}/20-{{ inventory_hostname }}-mail.mobileconfig"
+    mode: "0644"
+
+- name: Stage Mail.app profile install helper
+  become: true
+  ansible.builtin.template:
+    src: install-mail-profile.sh.j2
+    dest: "{{ mail_app_imap_profile_dir }}/install-mail-profile.sh"
+    mode: "0755"
+
+- name: Stage Mail.app UI setup helper
+  become: true
+  ansible.builtin.template:
+    src: setup-mail-app-ui.sh.j2
+    dest: "{{ mail_app_imap_profile_dir }}/setup-mail-app-ui.sh"
+    mode: "0755"
+
+- name: Stage Mail.app credential and SMTP repair helper
+  become: true
+  ansible.builtin.template:
+    src: configure-mail-account.sh.j2
+    dest: "{{ mail_app_imap_profile_dir }}/configure-mail-account.sh"
+    mode: "0755"
+
+- name: Try to install Mail.app IMAP profile
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - "{{ mail_app_imap_profile_dir }}/install-mail-profile.sh"
+  register: mail_app_imap_install
+  changed_when: "(mail_app_imap_install.stdout | default('') | trim) == 'installed'"
+  failed_when: false
+  when: mail_app_imap_use_profile | bool
+
+- name: Remove legacy managed Mail.app profile
+  ansible.builtin.shell: |
+    set -eu
+    if /usr/bin/profiles show -type configuration 2>/dev/null | /usr/bin/grep -q {{ mail_app_imap_identifier | quote }}; then
+      /usr/bin/profiles remove -identifier {{ mail_app_imap_identifier | quote }} >/dev/null
+      echo removed
+    else
+      echo absent
+    fi
+  args:
+    executable: /bin/sh
+  register: mail_app_imap_profile_remove
+  changed_when: "(mail_app_imap_profile_remove.stdout | default('') | trim) == 'removed'"
+  when: not mail_app_imap_use_profile | bool
+
+- name: Restart Mail account processes after managed profile removal
+  ansible.builtin.command:
+    argv: [/usr/bin/killall, Mail, maild, accountsd]
+  changed_when: false
+  failed_when: false
+  when:
+    - not mail_app_imap_use_profile | bool
+    - mail_app_imap_profile_remove is changed
+
+- name: Trust the lab mail server certificate
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    staged={{ (mail_app_imap_profile_dir ~ '/mail-server.crt') | quote }}
+    candidate="$(/usr/bin/mktemp)"
+    trap '/bin/rm -f "$candidate"' EXIT
+    /usr/bin/openssl s_client \
+      -connect {{ (mail_app_imap_setup_host ~ ':' ~ mail_app_imap_incoming_port) | quote }} \
+      -servername {{ mail_app_imap_incoming_host | quote }} </dev/null 2>/dev/null \
+      | /usr/bin/openssl x509 -out "$candidate"
+    if [ -f "$staged" ] && /usr/bin/cmp -s "$candidate" "$staged"; then
+      echo unchanged
+      exit 0
+    fi
+    /usr/bin/security add-trusted-cert -d -r trustRoot \
+      -k /Library/Keychains/System.keychain "$candidate"
+    /usr/bin/install -m 0644 "$candidate" "$staged"
+    echo configured
+  args:
+    executable: /bin/sh
+  register: mail_app_imap_certificate_trust
+  changed_when: "(mail_app_imap_certificate_trust.stdout | default('') | trim) == 'configured'"
+  when: mail_app_imap_incoming_ssl | bool
+
+- name: Launch Mail.app once after profile staging
+  ansible.builtin.command:
+    argv: [/usr/bin/open, -gj, -a, Mail]
+  changed_when: false
+  failed_when: false
+  when: mail_app_imap_launch_mail | bool
+
+- name: Grant Mail.app UI automation Accessibility permissions in system TCC
+  become: true
+  ansible.builtin.shell: |
+    set -eu
+    db="/Library/Application Support/com.apple.TCC/TCC.db"
+    now="$(/bin/date +%s)"
+    cols="$(/usr/bin/sqlite3 "$db" "PRAGMA table_info(access);" | /usr/bin/awk -F "|" '{print $2}' | /usr/bin/tr "\n" " ")"
+    for client in \
+      /usr/bin/osascript \
+      /usr/libexec/sshd-keygen-wrapper \
+      /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/Support/AEServer
+    do
+      /usr/bin/sqlite3 "$db" "DELETE FROM access WHERE service='kTCCServiceAccessibility' AND client='$client' AND client_type=1;"
+      if echo "$cols" | /usr/bin/grep -q last_reminded; then
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified,pid,pid_version,boot_uuid,last_reminded) VALUES ('kTCCServiceAccessibility','$client',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$now,NULL,NULL,'UNUSED',$now);"
+      else
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES ('kTCCServiceAccessibility','$client',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$now);"
+      fi
+    done
+    /usr/bin/killall tccd 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when: mail_app_imap_launch_mail | bool
+
+- name: Grant Mail.app UI automation Accessibility permissions in user TCC
+  ansible.builtin.shell: |
+    set -eu
+    db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+    [ -f "$db" ] || exit 0
+    now="$(/bin/date +%s)"
+    cols="$(/usr/bin/sqlite3 "$db" "PRAGMA table_info(access);" | /usr/bin/awk -F "|" '{print $2}' | /usr/bin/tr "\n" " ")"
+    for client in /usr/bin/osascript /usr/libexec/sshd-keygen-wrapper; do
+      /usr/bin/sqlite3 "$db" "DELETE FROM access WHERE service='kTCCServiceAccessibility' AND client='$client' AND client_type=1;"
+      if echo "$cols" | /usr/bin/grep -q last_reminded; then
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified,pid,pid_version,boot_uuid,last_reminded) VALUES ('kTCCServiceAccessibility','$client',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$now,NULL,NULL,'UNUSED',$now);"
+      else
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES ('kTCCServiceAccessibility','$client',1,2,4,1,NULL,NULL,0,'UNUSED',NULL,0,$now);"
+      fi
+    done
+    /usr/bin/killall tccd 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when: mail_app_imap_launch_mail | bool
+
+- name: Configure Mail.app IMAP account through first-run UI
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - "{{ mail_app_imap_profile_dir }}/setup-mail-app-ui.sh"
+  register: mail_app_imap_ui_setup
+  changed_when: "(mail_app_imap_ui_setup.stdout | default('') | trim) == 'configured'"
+  failed_when: mail_app_imap_ui_setup.rc != 0
+  environment:
+    RANGECTL_MAIL_PASSWORD: "{{ mail_app_imap_password }}"
+  no_log: true
+  when: mail_app_imap_launch_mail | bool
+
+- name: Provision Mail.app IMAP credential and trusted-subnet SMTP settings
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - "{{ mail_app_imap_profile_dir }}/configure-mail-account.sh"
+  register: mail_app_imap_account_config
+  changed_when: "(mail_app_imap_account_config.stdout | default('') | trim) == 'configured'"
+  failed_when: mail_app_imap_account_config.rc != 0
+  environment:
+    RANGECTL_MAIL_PASSWORD: "{{ mail_app_imap_password }}"
+  no_log: true
+
+- name: Stage Mail.app provisioning note
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ mail_app_imap_profile_dir }}/20-{{ inventory_hostname }}-mail.txt"
+    mode: "0644"
+    content: |
+      {{ mail_app_imap_profile_organization }} staged a Mail.app IMAP/SMTP profile for {{ mail_app_imap_display_name }}.
+      Mailbox: {{ mail_app_imap_email }}
+      Incoming: {{ mail_app_imap_incoming_host }}:{{ mail_app_imap_incoming_port }}
+      Outgoing: {{ mail_app_imap_outgoing_host }}:{{ mail_app_imap_outgoing_port }} (trusted lab subnet; no SMTP authentication)
+      Profile: {{ mail_app_imap_profile_dir }}/20-{{ inventory_hostname }}-mail.mobileconfig
+      UI setup helper: {{ mail_app_imap_profile_dir }}/setup-mail-app-ui.sh
+
+      macOS Ventura and newer require local approval for downloaded configuration profiles.
+      If the configuration profile helper reports manual-approval-required, the UI setup helper
+      configures Mail.app directly through its first-run account flow while logged in as the target user.

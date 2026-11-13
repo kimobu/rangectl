@@ -1,0 +1,65 @@
+postfix_packages:
+  - postfix
+  - dovecot-core
+  - dovecot-imapd
+  - apache2
+  - roundcube
+  - roundcube-mysql
+  - mariadb-server
+  - mariadb-client
+  - libapache2-mod-php
+  - php
+  - php-cli
+  - php-curl
+  - php-enchant
+  - php-gd
+  - php-gmp
+  - php-imagick
+  - php-imap
+  - php-intl
+  - php-ldap
+  - php-mbstring
+  - php-mysql
+  - php-pear
+  - php-xml
+  - php-zip
+  - jq
+  - curl
+  - w3m
+  - python3-pip
+  - python3-pymysql
+
+postfix_hostname: "mail.kvps.local"
+postfix_dns_server: "{{ hostvars['bind'].ansible_host if 'bind' in hostvars else '10.60.0.53' }}"
+postfix_mynetworks: "127.0.0.0/8 {{ postfix_dns_server | regex_replace('\\\\.\\\\d+$', '.0/24') }}"
+postfix_mailname: "mail.kvps.local"
+postfix_cert_path: "/etc/ssl/certs/mail-kvps.crt"
+postfix_key_path: "/etc/ssl/private/mail-kvps.key"
+postfix_virtual_mailbox_base: "/home/vmail/Maildir"
+postfix_virtual_domains:
+  - paypai-support.com
+  - b1ue.local
+  - naver.com
+postfix_virtual_mailboxes:
+  - {address: "admin@paypai-support.com", mailbox: "paypai-support.com/admin/"}
+  - {address: "hr@b1ue.local", mailbox: "b1ue.local/hr/"}
+  - {address: "mnd_contract@naver.com", mailbox: "naver.com/mnd_contract/"}
+postfix_enable_noise_cron: false
+postfix_schedule_seed_messages_enabled: true
+postfix_schedule_seed_messages: []
+
+roundcube_db_name: "roundcube"
+roundcube_db_user: "roundcube"
+roundcube_db_password: "abc123!!!"
+
+dovecot_users:
+  - { user: "bill", password: "{PLAIN}secret", uid: "", gid: "", home: "", mail: "" }
+  - { user: "timo@example.com", password: "{PLAIN}hello123", uid: "", gid: "", home: "", mail: "" }
+  - { user: "admin@paypai-support.com", password: "{PLAIN}abc123", uid: "1001", gid: "1001", home: "/home/vmail", mail: "maildir:~/Maildir/paypai-support.com/admin" }
+  - { user: "hr@b1ue.local", password: "{PLAIN}abc123", uid: "1001", gid: "1001", home: "/home/vmail", mail: "maildir:~/Maildir/b1ue.local/hr" }
+  - { user: "mnd_contract@naver.com", password: "{PLAIN}abc123", uid: "1001", gid: "1001", home: "/home/vmail", mail: "maildir:~/Maildir/naver.com/mnd_contract" }
+
+postfix_maildirs:
+  - "/home/vmail/Maildir/paypai-support.com/admin"
+  - "/home/vmail/Maildir/b1ue.local/hr"
+  - "/home/vmail/Maildir/naver.com/mnd_contract"

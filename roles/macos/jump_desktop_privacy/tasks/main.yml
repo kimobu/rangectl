@@ -1,0 +1,404 @@
+---
+- name: Skip Jump Desktop privacy profile when disabled
+  ansible.builtin.meta: end_host
+  when: not jump_desktop_privacy_enabled | bool
+
+- name: Detect Homebrew for Jump Desktop install
+  ansible.builtin.shell: |
+    set -eu
+    if [ -n "{{ jump_desktop_brew_path }}" ] && [ -x "{{ jump_desktop_brew_path }}" ]; then
+      printf '%s\n' "{{ jump_desktop_brew_path }}"
+      exit 0
+    fi
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+      if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        exit 0
+      fi
+    done
+    command -v brew
+  args:
+    executable: /bin/bash
+  register: jump_desktop_brew_detect
+  changed_when: false
+  failed_when: false
+  when: jump_desktop_install_enabled | bool
+
+- name: Detect macOS architecture for Homebrew bootstrap
+  ansible.builtin.command:
+    cmd: uname -m
+  register: jump_desktop_homebrew_arch
+  changed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_detect.rc != 0
+
+- name: Prepare Intel Homebrew directories for Jump Desktop
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ ansible_user | default('admin') }}"
+    group: admin
+    mode: "0775"
+  loop:
+    - /usr/local/Homebrew
+    - /usr/local/bin
+    - /usr/local/Caskroom
+    - /usr/local/Cellar
+    - /usr/local/Frameworks
+    - /usr/local/etc
+    - /usr/local/include
+    - /usr/local/lib
+    - /usr/local/opt
+    - /usr/local/sbin
+    - /usr/local/share
+    - /usr/local/var
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_detect.rc != 0
+    - jump_desktop_homebrew_arch.stdout | default('') == 'x86_64'
+
+- name: Prepare Apple Silicon Homebrew directory for Jump Desktop
+  become: true
+  ansible.builtin.file:
+    path: /opt/homebrew
+    state: directory
+    owner: "{{ ansible_user | default('admin') }}"
+    group: admin
+    mode: "0775"
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_detect.rc != 0
+    - jump_desktop_homebrew_arch.stdout | default('') == 'arm64'
+
+- name: Install Homebrew for Jump Desktop when missing
+  ansible.builtin.shell: |
+    set -o pipefail
+    NONINTERACTIVE=1 /bin/bash -c "$(/usr/bin/curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  args:
+    executable: /bin/bash
+  register: jump_desktop_homebrew_install
+  changed_when: jump_desktop_homebrew_install.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_detect.rc != 0
+
+- name: Install Homebrew tarball fallback for Jump Desktop
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ "{{ jump_desktop_homebrew_arch.stdout | default('') }}" = "arm64" ]; then
+      prefix=/opt/homebrew
+      bindir=/opt/homebrew/bin
+    else
+      prefix=/usr/local/Homebrew
+      bindir=/usr/local/bin
+    fi
+    if [ -x "$prefix/bin/brew" ]; then
+      exit 0
+    fi
+    mkdir -p "$prefix" "$bindir"
+    /usr/bin/curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD \
+      | /usr/bin/tar xz --strip 1 -C "$prefix"
+    ln -sf "$prefix/bin/brew" "$bindir/brew"
+  args:
+    executable: /bin/bash
+  register: jump_desktop_homebrew_tarball_install
+  changed_when: jump_desktop_homebrew_tarball_install.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_detect.rc != 0
+
+- name: Detect Homebrew after Jump Desktop bootstrap
+  ansible.builtin.shell: |
+    set -eu
+    if command -v brew >/dev/null 2>&1; then
+      command -v brew
+      exit 0
+    fi
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+      if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        exit 0
+      fi
+    done
+    exit 1
+  args:
+    executable: /bin/bash
+  register: jump_desktop_brew_final
+  changed_when: false
+  failed_when: false
+  when: jump_desktop_install_enabled | bool
+
+- name: Set Jump Desktop Homebrew command
+  ansible.builtin.set_fact:
+    jump_desktop_brew_cmd: "{{ jump_desktop_brew_final.stdout | default(jump_desktop_brew_detect.stdout | default('')) | trim }}"
+  when: jump_desktop_install_enabled | bool
+
+- name: Normalize Jump Desktop connect code
+  ansible.builtin.set_fact:
+    jump_desktop_connect_code_normalized: "{{ jump_desktop_connect_code | default('') | regex_replace('\\s+', '') }}"
+  when: jump_desktop_install_enabled | bool
+
+- name: Ensure Homebrew cask tap is available for Jump Desktop
+  ansible.builtin.command:
+    argv:
+      - "{{ jump_desktop_brew_cmd }}"
+      - tap
+      - homebrew/cask
+  environment:
+    HOMEBREW_NO_AUTO_UPDATE: "1"
+  register: jump_desktop_brew_tap
+  changed_when: "'Tapped' in (jump_desktop_brew_tap.stdout | default('')) or 'Cloning' in (jump_desktop_brew_tap.stdout | default(''))"
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_cmd | length > 0
+
+- name: Install Jump Desktop Connect
+  ansible.builtin.command:
+    argv:
+      - "{{ jump_desktop_brew_cmd }}"
+      - install
+      - --cask
+      - "{{ jump_desktop_cask }}"
+  environment:
+    HOMEBREW_NO_AUTO_UPDATE: "1"
+  register: jump_desktop_install
+  changed_when: jump_desktop_install.rc == 0 and 'already installed' not in ((jump_desktop_install.stdout | default('')) ~ (jump_desktop_install.stderr | default('')) | lower)
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_cmd | length > 0
+
+- name: Check Jump Desktop Connect app after Homebrew install
+  ansible.builtin.stat:
+    path: "{{ jump_desktop_app_path }}"
+  register: jump_desktop_app_after_brew
+  when: jump_desktop_install_enabled | bool
+
+- name: Locate staged Jump Desktop Connect package
+  ansible.builtin.shell: |
+    set -eu
+    for root in /usr/local/Caskroom/jump-desktop-connect /opt/homebrew/Caskroom/jump-desktop-connect; do
+      if [ -d "$root" ]; then
+        /usr/bin/find "$root" -name '*.pkg' -type f -print | /usr/bin/sort | /usr/bin/tail -1
+      fi
+    done
+  args:
+    executable: /bin/bash
+  register: jump_desktop_staged_pkg
+  changed_when: false
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - not jump_desktop_app_after_brew.stat.exists | default(false)
+
+- name: Install staged Jump Desktop Connect package non-interactively
+  become: true
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/installer
+      - -pkg
+      - "{{ jump_desktop_staged_pkg.stdout_lines | select('length') | list | last }}"
+      - -target
+      - /
+  register: jump_desktop_pkg_install
+  changed_when: jump_desktop_pkg_install.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - not jump_desktop_app_after_brew.stat.exists | default(false)
+    - jump_desktop_staged_pkg.stdout_lines | default([]) | select('length') | list | length > 0
+
+- name: Check Jump Desktop Connect app after staged package install
+  ansible.builtin.stat:
+    path: "{{ jump_desktop_app_path }}"
+  register: jump_desktop_app_after_pkg
+  when: jump_desktop_install_enabled | bool
+
+- name: Fetch Jump Desktop Connect cask payload for direct package install
+  ansible.builtin.command:
+    argv:
+      - "{{ jump_desktop_brew_cmd }}"
+      - fetch
+      - --cask
+      - --force
+      - "{{ jump_desktop_cask }}"
+  environment:
+    HOMEBREW_NO_AUTO_UPDATE: "1"
+  register: jump_desktop_fetch
+  changed_when: jump_desktop_fetch.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_brew_cmd | length > 0
+    - not jump_desktop_app_after_pkg.stat.exists | default(jump_desktop_app_after_brew.stat.exists | default(false))
+
+- name: Locate cached Jump Desktop Connect DMG
+  ansible.builtin.shell: |
+    set -eu
+    for root in "/Users/{{ ansible_user | default('admin') }}/Library/Caches/Homebrew/Cask" "/Users/{{ ansible_user | default('admin') }}/Library/Caches/Homebrew/downloads"; do
+      if [ -d "$root" ]; then
+        /usr/bin/find "$root" -iname '*JumpDesktopConnect*.dmg*' -type f -print
+      fi
+    done | /usr/bin/sort | /usr/bin/tail -1
+  args:
+    executable: /bin/bash
+  register: jump_desktop_cached_dmg
+  changed_when: false
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - not jump_desktop_app_after_pkg.stat.exists | default(jump_desktop_app_after_brew.stat.exists | default(false))
+
+- name: Install cached Jump Desktop Connect DMG non-interactively
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    dmg="{{ jump_desktop_cached_dmg.stdout | trim }}"
+    test -n "$dmg"
+    mount="$(/usr/bin/mktemp -d /tmp/jdc.XXXXXX)"
+    cleanup() {
+      /usr/bin/hdiutil detach "$mount" -quiet >/dev/null 2>&1 || true
+      /bin/rmdir "$mount" >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT
+    /usr/bin/hdiutil attach "$dmg" -mountpoint "$mount" -nobrowse -quiet
+    pkg="$(/usr/bin/find "$mount" -name '*.pkg' -type f -print | /usr/bin/head -1)"
+    test -n "$pkg"
+    /usr/sbin/installer -pkg "$pkg" -target /
+  args:
+    executable: /bin/bash
+  register: jump_desktop_dmg_install
+  changed_when: jump_desktop_dmg_install.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - not jump_desktop_app_after_pkg.stat.exists | default(jump_desktop_app_after_brew.stat.exists | default(false))
+    - jump_desktop_cached_dmg.stdout | default('') | trim | length > 0
+
+- name: Grant Jump Desktop Connect lab TCC permissions directly
+  become: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    client="{{ jump_desktop_privacy_bundle_id }}"
+    db="/Library/Application Support/com.apple.TCC/TCC.db"
+    now="$(/bin/date +%s)"
+    csreq="/tmp/jumpconnect.csreq"
+    /usr/bin/xxd -r -p > "$csreq" <<'HEX'
+    {{ jump_desktop_direct_tcc_csreq_hex }}
+    HEX
+    cols="$(/usr/bin/sqlite3 "$db" "PRAGMA table_info(access);" | /usr/bin/awk -F '|' '{print $2}' | /usr/bin/tr '\n' ' ')"
+    for svc in kTCCServiceAccessibility kTCCServiceScreenCapture; do
+      /usr/bin/sqlite3 "$db" "DELETE FROM access WHERE service='$svc' AND client='$client' AND client_type=0;"
+      if echo "$cols" | /usr/bin/grep -q "last_reminded"; then
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified,pid,pid_version,boot_uuid,last_reminded) VALUES ('$svc','$client',0,2,4,1,readfile('$csreq'),NULL,0,'UNUSED',NULL,0,$now,NULL,NULL,'UNUSED',$now);"
+      else
+        /usr/bin/sqlite3 "$db" "INSERT INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,policy_id,indirect_object_identifier_type,indirect_object_identifier,indirect_object_code_identity,flags,last_modified) VALUES ('$svc','$client',0,2,4,1,readfile('$csreq'),NULL,0,'UNUSED',NULL,0,$now);"
+      fi
+    done
+    /usr/bin/killall tccd 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  register: jump_desktop_tcc_grant
+  changed_when: jump_desktop_tcc_grant.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_direct_tcc_grant_enabled | bool
+    - jump_desktop_install_enabled | bool
+
+- name: Configure Jump Desktop Connect
+  ansible.builtin.shell: |
+    set +e
+    cli="{{ jump_desktop_cli_path }}"
+    if [ ! -x "$cli" ]; then
+      echo "missing-jumpconnect"
+      exit 0
+    fi
+    "$cli" --serverconfig ComputerName="{{ jump_desktop_computer_name }}" || true
+    "$cli" --serverconfig RTCEnabled={{ 1 if jump_desktop_rtc_enabled | bool else 0 }} || true
+    "$cli" --serverconfig RtcLocalServer={{ 1 if jump_desktop_rtc_local_server | bool else 0 }} || true
+    "$cli" --serverconfig VNCEnabled={{ 1 if jump_desktop_vnc_enabled | bool else 0 }} || true
+    "$cli" --serverconfig VNCPort={{ jump_desktop_vnc_port }} || true
+    /usr/bin/open -gj -a "Jump Desktop Connect" || true
+    echo "configured"
+  args:
+    executable: /bin/bash
+  register: jump_desktop_configure
+  changed_when: "'configured' in (jump_desktop_configure.stdout | default(''))"
+  failed_when: false
+  when: jump_desktop_install_enabled | bool
+
+- name: Check Jump Desktop Connect CLI
+  ansible.builtin.stat:
+    path: "{{ jump_desktop_cli_path }}"
+  register: jump_desktop_cli_stat
+  when: jump_desktop_install_enabled | bool
+
+- name: Register Jump Desktop Connect with connect code
+  ansible.builtin.command:
+    argv:
+      - "{{ jump_desktop_cli_path }}"
+      - --connectcode
+      - "{{ jump_desktop_connect_code_normalized }}"
+  register: jump_desktop_register
+  changed_when: jump_desktop_register.rc == 0
+  failed_when: false
+  when:
+    - jump_desktop_install_enabled | bool
+    - jump_desktop_connect_code_normalized | default('') | length > 0
+    - jump_desktop_cli_stat.stat.exists | default(false)
+
+- name: Ensure Jump Desktop privacy profile staging directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ jump_desktop_privacy_profile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Stage Jump Desktop privacy profile
+  become: true
+  ansible.builtin.template:
+    src: jump-desktop-privacy.mobileconfig.j2
+    dest: "{{ jump_desktop_privacy_profile_path }}"
+    mode: "0644"
+
+- name: Stage Jump Desktop privacy profile install helper
+  become: true
+  ansible.builtin.template:
+    src: install-jump-desktop-privacy-profile.sh.j2
+    dest: "{{ jump_desktop_privacy_profile_dir }}/install-jump-desktop-privacy-profile.sh"
+    mode: "0755"
+
+- name: Try to install Jump Desktop privacy profile
+  ansible.builtin.command:
+    argv:
+      - /bin/sh
+      - "{{ jump_desktop_privacy_profile_dir }}/install-jump-desktop-privacy-profile.sh"
+  register: jump_desktop_privacy_install
+  changed_when: "'installed' in (jump_desktop_privacy_install.stdout | default(''))"
+  failed_when: false
+
+- name: Stage Jump Desktop privacy profile note
+  become: true
+  ansible.builtin.copy:
+    dest: "{{ jump_desktop_privacy_profile_dir }}/30-jump-desktop-privacy.txt"
+    mode: "0644"
+    content: |
+      {{ jump_desktop_privacy_organization }} staged a Jump Desktop Connect PPPC profile.
+
+      Install result: {{ (jump_desktop_install.stdout | default('') ~ jump_desktop_install.stderr | default('')) | trim | default('not-run', true) }}
+      Configure result: {{ jump_desktop_configure.stdout | default('not-run') | trim }}
+      Profile: {{ jump_desktop_privacy_profile_path }}
+      Install helper: {{ jump_desktop_privacy_profile_dir }}/install-jump-desktop-privacy-profile.sh
+      Last install attempt: {{ jump_desktop_privacy_install.stdout | default('not-run') }}
+      Direct TCC grant: {{ 'enabled' if jump_desktop_direct_tcc_grant_enabled | bool else 'disabled' }}
+
+      This profile pre-allows Accessibility and Post Event for Jump Desktop Connect.
+      This lab also writes the Jump Desktop Connect Accessibility and Screen
+      Recording grants directly into the system TCC database so instructors can
+      access disconnected training VMs without using MDM.
+      On macOS 15, Jump may not recognize direct TCC changes until after a reboot.

@@ -1,0 +1,528 @@
+---
+- name: Resolve VMID for {{ bootstrap_vm.name }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    qm list | awk -v name='{{ bootstrap_vm.name }}' 'NR > 1 && $2 == name { print $1; exit }'
+  args:
+    executable: /bin/bash
+  register: bootstrap_vmid
+  changed_when: false
+  failed_when: bootstrap_vmid.stdout | trim == ""
+
+- name: Enable QEMU guest agent for {{ bootstrap_vm.name }}
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid='{{ bootstrap_vmid.stdout | trim }}'
+    if ! qm config "$vmid" | grep -q '^agent: enabled=1'; then
+      qm set "$vmid" --agent enabled=1
+      echo changed
+    fi
+  args:
+    executable: /bin/bash
+  register: bootstrap_enable_agent
+  changed_when: "'changed' in bootstrap_enable_agent.stdout"
+
+- name: Restart {{ bootstrap_vm.name }} after enabling QEMU guest agent
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid='{{ bootstrap_vmid.stdout | trim }}'
+    if qm status "$vmid" | grep -q 'status: running'; then
+      qm stop "$vmid" --skiplock 1
+      qm start "$vmid"
+      echo restarted
+    fi
+  args:
+    executable: /bin/bash
+  register: bootstrap_agent_restart
+  changed_when: "'restarted' in bootstrap_agent_restart.stdout"
+  when: bootstrap_enable_agent.changed
+
+- name: Start {{ bootstrap_vm.name }} if needed
+  ansible.builtin.shell: |
+    set -euo pipefail
+    vmid='{{ bootstrap_vmid.stdout | trim }}'
+    if qm status "$vmid" | grep -q 'status: stopped'; then
+      qm start "$vmid"
+      echo started
+    fi
+  args:
+    executable: /bin/bash
+  register: bootstrap_start
+  changed_when: "'started' in bootstrap_start.stdout"
+
+- name: Read current QEMU agent status for {{ bootstrap_vm.name }}
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "15"
+      - qm
+      - agent
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - ping
+  register: bootstrap_agent_ping
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: bootstrap_agent_ping.rc == 0
+
+- name: Wait for QEMU guest exec readiness for {{ bootstrap_vm.name }}
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "30"
+      - qm
+      - guest
+      - exec
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - --
+      - cmd.exe
+      - /c
+      - exit
+      - "0"
+  register: bootstrap_guest_exec_ready
+  changed_when: false
+  failed_when: >-
+    bootstrap_guest_exec_ready.rc != 0 or
+    ((bootstrap_guest_exec_ready.stdout | default('{}', true) | from_json).exitcode | default(1) | int) != 0
+  retries: 30
+  delay: 5
+  until: >-
+    bootstrap_guest_exec_ready.rc == 0 and
+    ((bootstrap_guest_exec_ready.stdout | default('{}', true) | from_json).exitcode | default(1) | int) == 0
+
+- name: Wait for Windows setup and OOBE completion for {{ bootstrap_vm.name }}
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - qm
+      - guest
+      - exec
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - --
+      - powershell.exe
+      - -NoProfile
+      - -ExecutionPolicy
+      - Bypass
+      - -EncodedCommand
+      - "{{ setup_complete_script | b64encode(encoding='utf-16-le') }}"
+  vars:
+    setup_complete_script: |
+      $ErrorActionPreference = 'Stop'
+      $setup = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup'
+      $imageState = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State' -ErrorAction SilentlyContinue).ImageState
+      $cloudbase = Get-Service -Name cloudbase-init -ErrorAction SilentlyContinue
+      $cloudbaseRunning = $cloudbase -and $cloudbase.Status -notin @('Stopped', 'StopPending')
+      [pscustomobject]@{
+        OOBEInProgress = [int]$setup.OOBEInProgress
+        SystemSetupInProgress = [int]$setup.SystemSetupInProgress
+        SetupType = [int]$setup.SetupType
+        SetupPhase = [int]$setup.SetupPhase
+        CmdLine = [string]$setup.CmdLine
+        ImageState = [string]$imageState
+        CloudbaseInitStatus = if ($cloudbase) { [string]$cloudbase.Status } else { '' }
+      } | ConvertTo-Json -Compress
+      if ($setup.OOBEInProgress -ne 0) { exit 10 }
+      if ($setup.SystemSetupInProgress -ne 0) { exit 11 }
+      if ($setup.SetupType -ne 0) { exit 12 }
+      if ($setup.CmdLine) { exit 13 }
+      if ($imageState -and $imageState -ne 'IMAGE_STATE_COMPLETE') { exit 14 }
+      if ($cloudbaseRunning) { exit 15 }
+  register: bootstrap_setup_complete
+  changed_when: false
+  failed_when: false
+  retries: "{{ (proxmox_windows_bootstrap_reboot_timeout | int / 10) | int }}"
+  delay: 10
+  until: >-
+    bootstrap_setup_complete.rc == 0 and
+    ((bootstrap_setup_complete.stdout | default('{}', true) | from_json).exitcode | default(1) | int) == 0
+
+- name: Fail if Windows setup did not complete for {{ bootstrap_vm.name }}
+  ansible.builtin.fail:
+    msg: >-
+      Windows setup/OOBE did not complete before bootstrap on {{ bootstrap_vm.name }}:
+      {{ (bootstrap_setup_complete.stdout | default('{}', true) | from_json).get('out-data', '') | default(bootstrap_setup_complete.stderr, true) }}
+  when: >-
+    bootstrap_setup_complete.rc != 0 or
+    ((bootstrap_setup_complete.stdout | default('{}', true) | from_json).exitcode | default(1) | int) != 0
+
+- name: Build bootstrap facts for {{ bootstrap_vm.name }}
+  ansible.builtin.set_fact:
+    bootstrap_space: "{{ proxmox_windows_bootstrap_space_by_name[bootstrap_vm.space] }}"
+    bootstrap_prefix: "{{ proxmox_windows_bootstrap_space_by_name[bootstrap_vm.space].cidr.split('/')[1] }}"
+    bootstrap_dns: "{{ proxmox_windows_bootstrap_space_by_name[bootstrap_vm.space].dns | default(proxmox_windows_bootstrap_space_by_name[bootstrap_vm.space].gateway) }}"
+
+- name: Build PowerShell bootstrap script for {{ bootstrap_vm.name }}
+  ansible.builtin.set_fact:
+    bootstrap_script: |
+      $ErrorActionPreference = 'Stop'
+      $desiredHostname = '{{ bootstrap_vm.hostname | default(bootstrap_vm.name) }}'
+      $desiredIp = '{{ bootstrap_vm.ip }}'
+      $desiredPrefix = {{ bootstrap_prefix }}
+      $desiredGateway = '{{ bootstrap_space.gateway }}'
+      $desiredDns = '{{ bootstrap_dns }}'
+      $adapterPattern = '{{ proxmox_windows_bootstrap_adapter_pattern }}'
+      $changed = $false
+      $needsReboot = $false
+
+      function Set-RangectlDword {
+        param(
+          [string]$Path,
+          [string]$Name,
+          [int]$Value
+        )
+        if (-not (Test-Path $Path)) {
+          New-Item -Path $Path -Force | Out-Null
+        }
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
+      }
+
+      function Disable-RangectlWindowsUpdates {
+        $windowsUpdatePolicy = 'HKLM:\Software\Policies\Microsoft\Windows\WindowsUpdate'
+        $automaticUpdatePolicy = Join-Path $windowsUpdatePolicy 'AU'
+        Set-RangectlDword -Path $automaticUpdatePolicy -Name NoAutoUpdate -Value 1
+        Set-RangectlDword -Path $automaticUpdatePolicy -Name AUOptions -Value 1
+        Set-RangectlDword -Path $automaticUpdatePolicy -Name ScheduledInstallDay -Value 0
+        Set-RangectlDword -Path $automaticUpdatePolicy -Name ScheduledInstallTime -Value 3
+        Set-RangectlDword -Path $windowsUpdatePolicy -Name DisableOSUpgrade -Value 1
+        Set-RangectlDword -Path $windowsUpdatePolicy -Name DisableWindowsUpdateAccess -Value 1
+        Set-RangectlDword -Path $windowsUpdatePolicy -Name DoNotConnectToWindowsUpdateInternetLocations -Value 1
+        Set-RangectlDword -Path 'HKLM:\Software\Policies\Microsoft\Windows\DeliveryOptimization' -Name DODownloadMode -Value 0
+        Set-RangectlDword -Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update' -Name AUOptions -Value 1
+
+        foreach ($serviceName in @('wuauserv','UsoSvc','WaaSMedicSvc','BITS','DoSvc','InstallService')) {
+          $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+          if ($service -and $service.Status -ne 'Stopped') {
+            Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+          }
+          sc.exe config $serviceName start= disabled | Out-Null
+          $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$serviceName"
+          if (Test-Path $serviceKey) {
+            Set-ItemProperty -Path $serviceKey -Name Start -Value 4 -ErrorAction SilentlyContinue
+          }
+        }
+
+        foreach ($taskRoot in @(
+          '\Microsoft\Windows\WindowsUpdate\',
+          '\Microsoft\Windows\UpdateOrchestrator\',
+          '\Microsoft\Windows\WaaSMedic\',
+          '\Microsoft\Windows\InstallService\',
+          '\Microsoft\Windows\USO_UxBroker\'
+        )) {
+          Get-ScheduledTask -TaskPath $taskRoot -ErrorAction SilentlyContinue |
+          Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
+        }
+      }
+
+      function Disable-RangectlBitLocker {
+        Set-RangectlDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker' -Name PreventDeviceEncryption -Value 1
+        if (Get-Command manage-bde.exe -ErrorAction SilentlyContinue) {
+          $status = manage-bde.exe -status C: 2>$null | Out-String
+          if ($LASTEXITCODE -eq 0 -and $status -match 'Conversion Status:\s+(?!Fully Decrypted)') {
+            manage-bde.exe -off C: | Out-Null
+            Write-Output 'bitlocker=decrypting'
+          }
+        }
+      }
+
+      function Disable-RangectlVirtualizationSecurity {
+        Set-RangectlDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name EnableVirtualizationBasedSecurity -Value 0
+        Set-RangectlDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard' -Name RequirePlatformSecurityFeatures -Value 0
+        Set-RangectlDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -Name Enabled -Value 0
+        Set-RangectlDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name LsaCfgFlags -Value 0
+        Set-RangectlDword -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard' -Name EnableVirtualizationBasedSecurity -Value 0
+        Set-RangectlDword -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard' -Name LsaCfgFlags -Value 0
+        Set-RangectlDword -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard' -Name RequirePlatformSecurityFeatures -Value 0
+        try {
+          bcdedit.exe /set '{current}' hypervisorlaunchtype off | Out-Null
+          bcdedit.exe /set '{current}' vsmlaunchtype off | Out-Null
+          bcdedit.exe /set '{current}' loadoptions DISABLE-LSA-ISO | Out-Null
+        } catch {
+          Write-Output "vbs bcdedit warning: $($_.Exception.Message)"
+        }
+      }
+
+      Disable-RangectlWindowsUpdates
+      Disable-RangectlBitLocker
+      Disable-RangectlVirtualizationSecurity
+
+      try {
+        bcdedit.exe /set '{current}' recoveryenabled No | Out-Null
+        bcdedit.exe /set '{current}' bootstatuspolicy IgnoreAllFailures | Out-Null
+      } catch {
+        Write-Output "bcdedit warning: $($_.Exception.Message)"
+      }
+      try {
+        powercfg.exe /hibernate off | Out-Null
+        powercfg.exe /change standby-timeout-ac 0 | Out-Null
+        powercfg.exe /change hibernate-timeout-ac 0 | Out-Null
+        powercfg.exe /change monitor-timeout-ac 0 | Out-Null
+        $wlms = Get-Service -Name WLMS -ErrorAction SilentlyContinue
+        if ($wlms) {
+          Stop-Service -Name WLMS -Force -ErrorAction SilentlyContinue
+          sc.exe config WLMS start= disabled | Out-Null
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\WLMS" -Name Start -Value 4 -ErrorAction SilentlyContinue
+          $changed = $true
+        }
+      } catch {
+        Write-Output "power/license guard warning: $($_.Exception.Message)"
+      }
+
+      $adapter = Get-NetAdapter | Where-Object {
+        $_.Status -eq 'Up' -and $_.Name -like $adapterPattern
+      } | Sort-Object InterfaceIndex | Select-Object -First 1
+      if (-not $adapter) {
+        $adapter = Get-NetAdapter | Where-Object {
+          $_.Name -like $adapterPattern
+        } | Sort-Object InterfaceIndex | Select-Object -First 1
+      }
+      if (-not $adapter) {
+        throw "No adapter matched $adapterPattern"
+      }
+      $alias = $adapter.Name
+      try {
+        Set-NetConnectionProfile -InterfaceIndex $adapter.ifIndex -NetworkCategory Private -ErrorAction SilentlyContinue
+      } catch {
+        Write-Output "network profile warning: $($_.Exception.Message)"
+      }
+
+      $current = Get-NetIPConfiguration -InterfaceAlias $alias
+      $currentIpv4 = $current.IPv4Address | Where-Object { $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1
+      if (-not $currentIpv4 -or $currentIpv4.IPAddress -ne $desiredIp -or [int]$currentIpv4.PrefixLength -ne $desiredPrefix) {
+        Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Where-Object { $_.IPAddress -ne '127.0.0.1' } |
+          Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+        Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+          Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+        New-NetIPAddress -InterfaceAlias $alias -IPAddress $desiredIp -PrefixLength $desiredPrefix -DefaultGateway $desiredGateway | Out-Null
+        $changed = $true
+      } else {
+        $currentGateway = ($current.IPv4DefaultGateway | Select-Object -First 1).NextHop
+        if ($currentGateway -ne $desiredGateway) {
+          Get-NetRoute -InterfaceAlias $alias -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
+            Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue
+          New-NetRoute -InterfaceAlias $alias -DestinationPrefix '0.0.0.0/0' -NextHop $desiredGateway | Out-Null
+          $changed = $true
+        }
+      }
+
+      $currentDns = @(Get-DnsClientServerAddress -InterfaceAlias $alias -AddressFamily IPv4).ServerAddresses
+      if ($currentDns.Count -ne 1 -or $currentDns[0] -ne $desiredDns) {
+        Set-DnsClientServerAddress -InterfaceAlias $alias -ServerAddresses $desiredDns
+        $changed = $true
+      }
+
+      Set-DnsClient -InterfaceAlias $alias -RegisterThisConnectionsAddress $true
+
+      $cloudbaseInit = Get-Service -Name cloudbase-init -ErrorAction SilentlyContinue
+      if ($cloudbaseInit) {
+        if ($cloudbaseInit.Status -ne 'Stopped') {
+          Stop-Service -Name cloudbase-init -Force -ErrorAction SilentlyContinue
+        }
+        if ($cloudbaseInit.StartType -ne 'Disabled') {
+          Set-Service -Name cloudbase-init -StartupType Disabled
+          $changed = $true
+        }
+      }
+
+      Set-Service -Name WinRM -StartupType Automatic
+      Start-Service -Name WinRM
+      $winrmStartupAction = New-ScheduledTaskAction `
+        -Execute 'powershell.exe' `
+        -Argument '-NoProfile -ExecutionPolicy Bypass -Command "Set-Service WinRM -StartupType Automatic; Start-Service WinRM"'
+      $winrmStartupTrigger = New-ScheduledTaskTrigger -AtStartup
+      $winrmStartupPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+      Register-ScheduledTask `
+        -TaskName 'RangectlStartWinRM' `
+        -Action $winrmStartupAction `
+        -Trigger $winrmStartupTrigger `
+        -Principal $winrmStartupPrincipal `
+        -Force | Out-Null
+      try {
+        winrm quickconfig -quiet 2>$null | Out-Null
+      } catch {
+        Write-Output "winrm quickconfig warning: $($_.Exception.Message)"
+      }
+      winrm set winrm/config/service/auth '@{Basic="true"}' | Out-Null
+      winrm set winrm/config/service/auth '@{Negotiate="true"}' | Out-Null
+      winrm set winrm/config/service '@{AllowUnencrypted="true"}' | Out-Null
+
+      $httpRule = Get-NetFirewallRule -Name 'WINRM-HTTP-In-TCP-Rangectl' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+      if (-not $httpRule) {
+        New-NetFirewallRule `
+          -Name 'WINRM-HTTP-In-TCP-Rangectl' `
+          -DisplayName 'Windows Remote Management (HTTP-In) - rangectl' `
+          -Direction Inbound `
+          -Action Allow `
+          -Protocol TCP `
+          -Profile Any `
+          -LocalPort 5985 | Out-Null
+        $changed = $true
+      } elseif ($httpRule.Enabled -ne 'True') {
+        Enable-NetFirewallRule -Name 'WINRM-HTTP-In-TCP-Rangectl'
+        $changed = $true
+      }
+
+      $cert = Get-ChildItem -Path Cert:\LocalMachine\My |
+        Where-Object { $_.Subject -eq "CN=$env:COMPUTERNAME" } |
+        Sort-Object NotAfter -Descending |
+        Select-Object -First 1
+      if (-not $cert) {
+        $cert = New-SelfSignedCertificate `
+          -DnsName $env:COMPUTERNAME `
+          -CertStoreLocation Cert:\LocalMachine\My `
+          -NotAfter (Get-Date).AddYears(5)
+        $changed = $true
+      }
+
+      $listenerOutput = winrm enumerate winrm/config/listener
+      $validHttps = ($listenerOutput | Select-String -Pattern 'Transport = HTTPS' -Quiet) -and
+        ($listenerOutput | Select-String -Pattern "CertificateThumbprint = $($cert.Thumbprint)" -Quiet)
+      if (-not $validHttps) {
+        Get-ChildItem WSMan:\localhost\Listener |
+          Where-Object { $_.Keys -contains 'Transport=HTTPS' } |
+          Remove-Item -Recurse -Force
+        winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$env:COMPUTERNAME`";CertificateThumbprint=`"$($cert.Thumbprint)`"}" | Out-Null
+        $changed = $true
+      }
+
+      $httpsRule = Get-NetFirewallRule -Name 'WINRM-HTTPS-In-TCP-Rangectl' -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+      if (-not $httpsRule) {
+        New-NetFirewallRule `
+          -Name 'WINRM-HTTPS-In-TCP-Rangectl' `
+          -DisplayName 'Windows Remote Management (HTTPS-In) - rangectl' `
+          -Direction Inbound `
+          -Action Allow `
+          -Protocol TCP `
+          -Profile Any `
+          -LocalPort 5986 | Out-Null
+        $changed = $true
+      } elseif ($httpsRule.Enabled -ne 'True') {
+        Enable-NetFirewallRule -Name 'WINRM-HTTPS-In-TCP-Rangectl'
+        $changed = $true
+      }
+
+      if ($env:COMPUTERNAME -ne $desiredHostname) {
+        Rename-Computer -NewName $desiredHostname -Force
+        $changed = $true
+        $needsReboot = $true
+      }
+
+      Write-Output "adapter=$alias"
+      Write-Output "hostname=$env:COMPUTERNAME desired=$desiredHostname"
+      Write-Output "ip=$desiredIp/$desiredPrefix gateway=$desiredGateway dns=$desiredDns"
+      Write-Output "changed=$changed reboot=$needsReboot"
+
+      if ($needsReboot) {
+        shutdown.exe /r /t 5 /f /c "rangectl Windows bootstrap hostname change"
+      }
+
+- name: Apply Windows bootstrap for {{ bootstrap_vm.name }}
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "180"
+      - qm
+      - guest
+      - exec
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - --
+      - powershell.exe
+      - -NoProfile
+      - -ExecutionPolicy
+      - Bypass
+      - -EncodedCommand
+      - "{{ bootstrap_script | b64encode(encoding='utf-16-le') }}"
+  register: bootstrap_exec
+  failed_when: >-
+    bootstrap_exec.rc != 0 or
+    ((bootstrap_exec.stdout | default('{}', true) | from_json).exitcode | default(1) | int) != 0
+  changed_when: >-
+    'changed=True' in ((bootstrap_exec.stdout | default('{}', true) | from_json).get('out-data', '') | default('')) or
+    'changed=true' in ((bootstrap_exec.stdout | default('{}', true) | from_json).get('out-data', '') | default(''))
+  retries: 3
+  delay: 15
+  until: >-
+    bootstrap_exec.rc == 0 and
+    ((bootstrap_exec.stdout | default('{}', true) | from_json).exitcode | default(1) | int) == 0
+
+- name: Allow {{ bootstrap_vm.name }} hostname-change reboot to start
+  ansible.builtin.pause:
+    seconds: 45
+  when: "'reboot=True' in (bootstrap_exec.stdout | default('')) or 'reboot=true' in (bootstrap_exec.stdout | default(''))"
+
+- name: Wait for QEMU agent after {{ bootstrap_vm.name }} bootstrap
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "15"
+      - qm
+      - agent
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - ping
+  register: bootstrap_wait_agent
+  changed_when: false
+  retries: "{{ (proxmox_windows_bootstrap_reboot_timeout | int / 5) | int }}"
+  delay: 5
+  until: bootstrap_wait_agent.rc == 0
+
+- name: Verify Windows bootstrap for {{ bootstrap_vm.name }}
+  ansible.builtin.command:
+    argv:
+      - timeout
+      - "60"
+      - qm
+      - guest
+      - exec
+      - "{{ bootstrap_vmid.stdout | trim }}"
+      - --
+      - powershell.exe
+      - -NoProfile
+      - -ExecutionPolicy
+      - Bypass
+      - -EncodedCommand
+      - "{{ verify_script | b64encode(encoding='utf-16-le') }}"
+  vars:
+    verify_script: |
+      $adapter = Get-NetAdapter | Where-Object {
+        $_.Status -eq 'Up' -and $_.Name -like '{{ proxmox_windows_bootstrap_adapter_pattern }}'
+      } | Sort-Object InterfaceIndex | Select-Object -First 1
+      $ip = (Get-NetIPAddress -InterfaceAlias $adapter.Name -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' } | Select-Object -First 1).IPAddress
+      $dns = @((Get-DnsClientServerAddress -InterfaceAlias $adapter.Name -AddressFamily IPv4).ServerAddresses) -join ','
+      Set-Service -Name WinRM -StartupType Automatic
+      Start-Service -Name WinRM
+      $httpsListener = winrm enumerate winrm/config/listener | Select-String -Pattern 'Transport = HTTPS' -Quiet
+      $httpListener = winrm enumerate winrm/config/listener | Select-String -Pattern 'Transport = HTTP' -Quiet
+      $httpPort = Get-NetTCPConnection -LocalPort 5985 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+      $httpsPort = Get-NetTCPConnection -LocalPort 5986 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+      $setupState = Get-ItemProperty -Path 'HKLM:\SYSTEM\Setup'
+      Write-Output "computer=$env:COMPUTERNAME ip=$ip dns=$dns"
+      if ($env:COMPUTERNAME -ne '{{ bootstrap_vm.hostname | default(bootstrap_vm.name) }}') { exit 10 }
+      if ($ip -ne '{{ bootstrap_vm.ip }}') { exit 11 }
+      if ($dns -ne '{{ bootstrap_dns }}') { exit 12 }
+      if (-not $httpListener) { exit 13 }
+      if (-not $httpPort) { exit 14 }
+      if (-not $httpsListener) { exit 15 }
+      if (-not $httpsPort) { exit 16 }
+      if ($setupState.OOBEInProgress -ne 0) { exit 17 }
+      if ($setupState.SystemSetupInProgress -ne 0) { exit 18 }
+      if ($setupState.SetupType -ne 0) { exit 19 }
+      if ($setupState.CmdLine) { exit 20 }
+      $pendingSessions = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\SessionsPending' -ErrorAction SilentlyContinue)
+      if ($pendingSessions.Count -gt 0) {
+        Write-Output "sessions_pending=$($pendingSessions.Count)"
+      }
+      if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { exit 22 }
+      if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { exit 23 }
+  register: bootstrap_verify
+  failed_when: >-
+    bootstrap_verify.rc != 0 or
+    ((bootstrap_verify.stdout | default('{}', true) | from_json).exitcode | default(1) | int) != 0
+  changed_when: false
+  retries: 6
+  delay: 10
+  until: >-
+    bootstrap_verify.rc == 0 and
+    ((bootstrap_verify.stdout | default('{}', true) | from_json).exitcode | default(1) | int) == 0

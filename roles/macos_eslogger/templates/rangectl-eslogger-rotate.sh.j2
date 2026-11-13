@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+log_path="{{ macos_eslogger_log_path }}"
+error_log_path="{{ macos_eslogger_error_log_path }}"
+max_bytes={{ macos_eslogger_max_bytes }}
+
+[ -f "$log_path" ] || exit 0
+
+size_bytes="$(stat -f %z "$log_path" 2>/dev/null || echo 0)"
+case "$size_bytes" in
+  ''|*[!0-9]*) size_bytes=0 ;;
+esac
+
+[ "$size_bytes" -le "$max_bytes" ] && exit 0
+
+timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+printf '%s truncating %s from %s bytes to enforce %s byte cap\n' \
+  "$timestamp" "$log_path" "$size_bytes" "$max_bytes" >> "$error_log_path"
+: > "$log_path"

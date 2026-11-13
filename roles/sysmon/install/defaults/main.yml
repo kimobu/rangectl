@@ -1,0 +1,2 @@
+sysmon_installer_src: "{{ role_path }}/files/Sysmon/Sysmon64.exe"
+sysmon_download_url: "https://download.sysinternals.com/files/Sysmon.zip"

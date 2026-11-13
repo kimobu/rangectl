@@ -1,0 +1,395 @@
+---
+# Provision pfSense via SSH (no pfsense_* Ansible modules required).
+#
+# Assumptions:
+# - pfSense SSH is enabled and reachable.
+# - ansible_user/ansible_password in inventory are valid for SSH (typically admin).
+#
+# This role:
+# - Reads a backup of the current config.xml over SSH (no remote Python needed)
+# - Uploads the desired config.xml over SSH (no remote Python needed)
+# - Applies it via /etc/rc.reload_all
+
+- name: Set pfSense paths
+  ansible.builtin.set_fact:
+    pfsense_config_remote: "{{ pfsense_config_remote | default('/cf/conf/config.xml') }}"
+    pfsense_config_local: "{{ pfsense_config_local | default((rangectl_range_base | default(playbook_dir ~ '/..')) ~ '/pfsense-config.xml') }}"
+    pfsense_backup_dir_local: "{{ pfsense_backup_dir_local | default((rangectl_state_dir | default(playbook_dir ~ '/private_data_dir')) ~ '/pfsense_backups') }}"
+    pfsense_config_stage_remote: "{{ pfsense_config_stage_remote | default('/tmp/rangectl-pfsense-config.xml') }}"
+    pfsense_base_rendered_config_local: "{{ pfsense_backup_dir_local | default((rangectl_state_dir | default(playbook_dir ~ '/private_data_dir')) ~ '/pfsense_backups') }}/{{ inventory_hostname }}-base-config.xml"
+    pfsense_rendered_config_local: "{{ pfsense_backup_dir_local | default((rangectl_state_dir | default(playbook_dir ~ '/private_data_dir')) ~ '/pfsense_backups') }}/{{ inventory_hostname }}-desired-config.xml"
+    pfsense_rules_json_local: "{{ pfsense_backup_dir_local | default((rangectl_state_dir | default(playbook_dir ~ '/private_data_dir')) ~ '/pfsense_backups') }}/{{ inventory_hostname }}-rules.json"
+    pfsense_ssh_options: >-
+      -o StrictHostKeyChecking={{ 'yes' if (pfsense_ssh_strict_host_key_checking | bool) else 'no' }}
+      {% if pfsense_ssh_known_hosts_file | length > 0 %}-o UserKnownHostsFile={{ pfsense_ssh_known_hosts_file | quote }}{% endif %}
+      -o ControlMaster=no
+
+- name: Ensure local backup directory exists
+  ansible.builtin.file:
+    path: "{{ pfsense_backup_dir_local }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Compute template variables for pfSense config
+  ansible.builtin.set_fact:
+    pfsense_ip_range: "{{ ip_range | default((ansible_host | default('192.168.10.1')).split('.')[0:3] | join('.')) }}"
+    pfsense_grey_ip_range: "{{ grey_ip_range | default('10.60.0') }}"
+
+- name: Ensure desired pfSense config exists on controller
+  ansible.builtin.stat:
+    path: "{{ pfsense_config_local }}"
+  delegate_to: localhost
+  register: pfsense_config_local_stat
+  run_once: true
+
+- name: Fail if desired pfSense config is missing
+  ansible.builtin.fail:
+    msg: "pfSense config not found on controller: {{ pfsense_config_local }}"
+  when: not pfsense_config_local_stat.stat.exists
+
+- name: Render pfSense config template on controller
+  ansible.builtin.template:
+    src: "{{ pfsense_config_local }}"
+    dest: "{{ pfsense_base_rendered_config_local }}"
+    mode: "0600"
+  vars:
+    ip_range: "{{ pfsense_ip_range }}"
+    grey_ip_range: "{{ pfsense_grey_ip_range }}"
+  delegate_to: localhost
+
+- name: Write pfSense rules JSON from vars
+  ansible.builtin.copy:
+    content: "{{ {'pfsense_interfaces': pfsense_interfaces | default([]), 'pfsense_gateways': pfsense_gateways | default([]), 'pfsense_openvpn': pfsense_openvpn | default({}), 'pfsense_inbound_nat': (pfsense_inbound_nat | default([])) + (pfsense_extra_nat | default([])), 'pfsense_outbound_nat': pfsense_outbound_nat | default([]), 'pfsense_filter_rules': pfsense_filter_rules | default([]), 'pfsense_dhcp': pfsense_dhcp | default({}), 'pfsense_dns_overrides': pfsense_dns_overrides | default([])} | to_json }}"
+    dest: "{{ pfsense_rules_json_local }}"
+    mode: "0600"
+  delegate_to: localhost
+
+- name: Render desired pfSense config.xml from base + vars (WAN NAT/Filter)
+  ansible.builtin.command:
+    cmd: >-
+      python3 "{{ role_path }}/files/render_pfsense_nat_filter.py"
+      --in "{{ pfsense_base_rendered_config_local }}"
+      --out "{{ pfsense_rendered_config_local }}"
+      --rules-json "{{ pfsense_rules_json_local }}"
+  delegate_to: localhost
+  register: pfsense_render_cmd
+
+- name: Show pfSense render summary
+  ansible.builtin.debug:
+    var: pfsense_render_cmd.stderr_lines
+
+- name: Wait for pfSense SSH to become reachable
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host | default(inventory_hostname) }}"
+    port: "{{ ansible_port | default(22) }}"
+    delay: "{{ pfsense_ssh_wait_delay }}"
+    timeout: "{{ pfsense_ssh_wait_timeout }}"
+    state: started
+  delegate_to: localhost
+
+- name: Detect SSH command execution and privilege level
+  ansible.builtin.command:
+    cmd: >-
+      timeout 15 sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'id -u </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_id_u
+  until: pfsense_id_u.rc == 0
+  retries: 12
+  delay: 5
+
+- name: Fail if pfSense SSH cannot execute remote commands
+  ansible.builtin.fail:
+    msg: >
+      pfSense SSH is reachable but remote command execution failed (expected numeric uid from `id -u`).
+      This usually means SSH is configured to drop into the pfSense console menu instead of a shell.
+      Fix by setting the admin user's shell to `/bin/sh` (System -> User Manager -> admin -> Shell)
+      and ensuring "Disable shell access" is not enabled (System -> Advanced -> Admin Access).
+      Output: {{ pfsense_id_u.stdout | default('') | trim }}
+  when: not (pfsense_id_u.stdout | default('') | trim | regex_search('^[0-9]+$'))
+
+- name: Detect base64 tool on pfSense
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      'if [ -x /usr/bin/openssl ]; then echo "openssl:/usr/bin/openssl"; elif [ -x /usr/local/bin/openssl ]; then echo "openssl:/usr/local/bin/openssl"; elif command -v openssl >/dev/null 2>&1; then echo "openssl:openssl"; elif command -v base64 >/dev/null 2>&1; then echo "base64:base64"; elif command -v b64encode >/dev/null 2>&1 && command -v b64decode >/dev/null 2>&1; then echo "b64:b64"; else echo "none:none"; fi'
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_b64_tool
+
+- name: Set base64 tool facts
+  ansible.builtin.set_fact:
+    pfsense_b64_tool_name: "{{ (pfsense_b64_tool.stdout | default('none:none') | trim).split(':')[0] }}"
+    pfsense_b64_tool_cmd: "{{ (pfsense_b64_tool.stdout | default('none:none') | trim).split(':')[1] }}"
+
+- name: Fail if no base64 tool is available
+  ansible.builtin.fail:
+    msg: >
+      No base64 encoder/decoder found on pfSense (looked for openssl, base64, b64encode/b64decode).
+      Enable shell access and ensure base utilities are present.
+      Detection output: {{ pfsense_b64_tool.stdout | default('') | trim }}
+  when: pfsense_b64_tool_name == 'none'
+
+- name: Read current pfSense config.xml (base64, openssl)
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c '{{ pfsense_b64_tool_cmd }} base64 -A -in \"{{ pfsense_config_remote }}\" </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_config_remote_b64_openssl
+  when: pfsense_b64_tool_name == 'openssl'
+
+- name: Read current pfSense config.xml (base64, base64)
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'base64 < \"{{ pfsense_config_remote }}\" </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_config_remote_b64_base64
+  when: pfsense_b64_tool_name == 'base64'
+
+- name: Read current pfSense config.xml (base64, b64encode wrapper)
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'b64encode \"{{ pfsense_config_remote }}\" config.xml </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_config_remote_b64_b64encode
+  when: pfsense_b64_tool_name == 'b64'
+
+- name: Normalize current pfSense config.xml as base64 string (openssl)
+  ansible.builtin.set_fact:
+    pfsense_config_remote_b64_str: "{{ pfsense_config_remote_b64_openssl.stdout | trim }}"
+  when: pfsense_b64_tool_name == 'openssl'
+
+- name: Normalize current pfSense config.xml as base64 string (base64)
+  ansible.builtin.set_fact:
+    pfsense_config_remote_b64_str: "{{ pfsense_config_remote_b64_base64.stdout | trim }}"
+  when: pfsense_b64_tool_name == 'base64'
+
+- name: Normalize current pfSense config.xml as base64 string (b64encode wrapper)
+  ansible.builtin.set_fact:
+    pfsense_config_remote_b64_str: >-
+      {{
+        (
+          pfsense_config_remote_b64_b64encode.stdout.splitlines()[1:]
+          | reject('equalto', '====')
+          | reject('equalto', 'end')
+          | list
+          | join('')
+        )
+      }}
+  when: pfsense_b64_tool_name == 'b64'
+
+- name: Save current pfSense config.xml backup to controller
+  ansible.builtin.copy:
+    content: "{{ pfsense_config_remote_b64_str | b64decode }}"
+    dest: "{{ pfsense_backup_dir_local }}/{{ inventory_hostname }}-config.xml"
+    mode: "0600"
+  delegate_to: localhost
+
+- name: Upload desired pfSense config.xml to remote staging path (scp via sshpass)
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e scp
+      -O
+      -P {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ pfsense_rendered_config_local }}"
+      "{{ ansible_user }}@{{ ansible_host }}:{{ pfsense_config_stage_remote }}"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  run_once: false
+
+- name: Install staged pfSense config.xml
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'cp \"{{ pfsense_config_stage_remote }}\" \"{{ pfsense_config_remote }}\" </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+
+- name: Disable pfSense initial setup wizard
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'rm -f /cf/conf/trigger_initial_wizard /cf/conf/trigger_initial_wizard_after_reboot /conf/trigger_initial_wizard /conf/trigger_initial_wizard_after_reboot </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+
+- name: Clear pfSense config cache
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'rm -f /tmp/config.cache </dev/null'"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+
+- name: Apply pfSense interface configuration
+  ansible.builtin.shell:
+    cmd: >-
+      timeout 8 sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'nohup /etc/rc.reload_interfaces >/tmp/rangectl-rc.reload_interfaces.log 2>&1 </dev/null &'"
+      || true
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  changed_when: true
+
+- name: Wait briefly for pfSense interfaces to reload
+  ansible.builtin.pause:
+    seconds: 8
+
+- name: Wait for pfSense SSH after interface reload
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host | default(inventory_hostname) }}"
+    port: "{{ ansible_port | default(22) }}"
+    timeout: 300
+  delegate_to: localhost
+
+- name: Apply pfSense configuration
+  ansible.builtin.shell:
+    cmd: >-
+      timeout 8 sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "sh -c 'nohup /etc/rc.reload_all >/tmp/rangectl-rc.reload_all.log 2>&1 </dev/null &'"
+      || true
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  changed_when: true
+
+- name: Wait briefly for pfSense to reload
+  ansible.builtin.pause:
+    seconds: 15
+
+- name: Wait for pfSense SSH to become reachable again
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: "{{ ansible_port | default(22) }}"
+    timeout: 300
+  delegate_to: localhost
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Re-apply pfSense filter/NAT rules
+  ansible.builtin.debug:
+    msg: "Skipped explicit rc.filter_configure; /etc/rc.reload_all already applied the uploaded config."
+
+- name: Wait briefly for filter/NAT to apply
+  ansible.builtin.pause:
+    seconds: 10
+
+- name: Verify NAT rules exist in active config
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "echo nat_rule_count=$(grep -c '<rule>' /cf/conf/config.xml | tr -d '\r'); echo nat_section=$(grep -n '<nat>' /cf/conf/config.xml | head -n 1 | tr -d '\r')"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_nat_verify
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show NAT verification output
+  ansible.builtin.debug:
+    var: pfsense_nat_verify.stdout_lines
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show NAT rule descriptions from config.xml
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "awk '/<nat>/{in_nat=1} in_nat && /<descr>/{print} /<\/nat>/{in_nat=0}' /cf/conf/config.xml | head -n 25"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_nat_descr
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show active pf rules summary
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "echo pfctl_nat_lines=$(pfctl -sn 2>/dev/null | wc -l | tr -d ' '); echo pfctl_filter_lines=$(pfctl -sr 2>/dev/null | wc -l | tr -d ' ')"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_pf_summary
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show pf summary output
+  ansible.builtin.debug:
+    var: pfsense_pf_summary.stdout_lines
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show last reload/filter logs (if present)
+  ansible.builtin.command:
+    cmd: >-
+      sshpass -e ssh -T
+      -p {{ ansible_port | default(22) }}
+      {{ pfsense_ssh_options }}
+      "{{ ansible_user }}@{{ ansible_host }}"
+      "for f in /tmp/rangectl-rc.reload_all.log /tmp/rangectl-rc.filter_configure.log; do if [ -f \"$f\" ]; then echo \"=== $f ===\"; tail -n 50 \"$f\"; fi; done"
+  environment:
+    SSHPASS: "{{ ansible_password }}"
+  delegate_to: localhost
+  register: pfsense_reload_logs
+  when: pfsense_verify_after_reload | default(false) | bool
+
+- name: Show reload/filter logs
+  ansible.builtin.debug:
+    var: pfsense_reload_logs.stdout_lines
+  when: pfsense_verify_after_reload | default(false) | bool

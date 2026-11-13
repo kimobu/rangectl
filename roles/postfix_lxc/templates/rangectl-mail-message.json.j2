@@ -1,0 +1,8 @@
+{
+  "from": {{ item.from | to_json }},
+  "to": {{ item.to | to_json }},
+  "subject": {{ item.subject | to_json }},
+  "body": {{ item.body | default('Please review the attached material.') | to_json }},
+  "html": {{ item.html | default('') | to_json }},
+  "attachments": {{ item.attachments | default([]) | to_json }}
+}

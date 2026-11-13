@@ -1,0 +1,12 @@
+---
+- import_playbook: data.yml
+  vars:
+    data_path: "{{ rangectl_ad_data_path | default(rangectl_range_base ~ '/ad/' ~ domain_name ~ '/data') }}"
+  tags: 'data'
+
+- name: Configure bind container
+  hosts: bind
+  become: true
+  roles:
+    - { role: 'bind_lxc', tags: 'install' }
+

@@ -1,0 +1,12 @@
+[Unit]
+Description=Submit rangectl lab mail {{ item.id }} over monitored TCP SMTP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ smtp_submitter_binary_path }} --host {{ smtp_submitter_host }} --port {{ smtp_submitter_port }} {{ smtp_submitter_config_dir }}/{{ item.id }}.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
